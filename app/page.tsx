@@ -17,7 +17,10 @@ import {
   UserRound,
   Users,
 } from "lucide-react";
-import type { User } from "@supabase/supabase-js";
+import type {
+  SupabaseClient,
+  User,
+} from "@supabase/supabase-js";
 import {
   type ReactNode,
   useEffect,
@@ -27,6 +30,10 @@ import {
 } from "react";
 
 import { createClient } from "@/lib/supabase/client";
+
+/* =========================================================
+ * TYPES
+ * ======================================================= */
 
 type CalendarAudience =
   | "Semua peserta"
@@ -50,22 +57,63 @@ type RundownDay = {
   items: RundownItem[];
 };
 
-type SaveStatus = "loading" | "saving" | "saved" | "error";
+type SaveStatus =
+  | "loading"
+  | "saving"
+  | "saved"
+  | "error";
 
-type AuthStatus = "loading" | "idle" | "redirecting" | "error";
+type AuthStatus =
+  | "loading"
+  | "idle"
+  | "redirecting"
+  | "error";
+
+type ProjectStatus =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "error";
+
+type ProjectRole =
+  | "owner"
+  | "editor"
+  | "participant";
+
+type RundownProject = {
+  id: string;
+  name: string;
+  description: string | null;
+  owner_id: string;
+  created_at: string;
+  updated_at: string;
+  role: ProjectRole;
+};
+
+type ProjectRow = Omit<
+  RundownProject,
+  "role"
+>;
 
 type StoredRundownData = {
   days: RundownDay[];
   activeDayId: string;
 };
 
-const STORAGE_KEY = "rundownku-data-v2";
+/* =========================================================
+ * CONSTANTS
+ * ======================================================= */
+
+const STORAGE_KEY = "rundownku-data-v3";
+
+const PROJECT_COLUMNS =
+  "id,name,description,owner_id,created_at,updated_at";
 
 const INPUT_BASE =
-  "h-11 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100";
+  "h-11 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500";
 
 const INPUT_REQUIRED =
-  "h-11 w-full rounded-xl border border-amber-200 bg-amber-50 px-3.5 text-sm font-semibold text-slate-900 outline-none transition placeholder:font-normal placeholder:text-amber-700/50 focus:border-amber-400 focus:ring-4 focus:ring-amber-100";
+  "h-11 w-full rounded-xl border border-amber-200 bg-amber-50 px-3.5 text-sm font-semibold text-slate-900 outline-none transition placeholder:font-normal placeholder:text-amber-700/50 focus:border-amber-400 focus:ring-4 focus:ring-amber-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500";
 
 const initialDays: RundownDay[] = [
   {
@@ -101,7 +149,8 @@ const initialDays: RundownDay[] = [
       {
         id: "membuat-mie",
         endTime: "17:00",
-        activity: "Melanjutkan proses pembuatan mie",
+        activity:
+          "Melanjutkan proses pembuatan mie",
         note: "",
         personInCharge: "",
         audience: "Hanya PIC",
@@ -117,7 +166,8 @@ const initialDays: RundownDay[] = [
       {
         id: "pengajian",
         endTime: "19:00",
-        activity: "pengajian anjay bersama ebok",
+        activity:
+          "pengajian anjay bersama ebok",
         note: "",
         personInCharge: "",
         audience: "Semua peserta",
@@ -141,14 +191,21 @@ const monthNames = [
   "Desember",
 ];
 
+/* =========================================================
+ * UTILITY FUNCTIONS
+ * ======================================================= */
+
 function createId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
 function timeToMinutes(time: string) {
-  if (!time) return null;
+  if (!time) {
+    return null;
+  }
 
-  const [hours, minutes] = time.split(":").map(Number);
+  const [hours, minutes] =
+    time.split(":").map(Number);
 
   if (
     Number.isNaN(hours) ||
@@ -184,7 +241,9 @@ function calculateDurationMinutes(
   return end - start;
 }
 
-function formatDuration(minutes: number | null) {
+function formatDuration(
+  minutes: number | null,
+) {
   if (minutes === null) {
     return "Belum lengkap";
   }
@@ -208,13 +267,16 @@ function formatDate(date: string) {
     return "Tanggal belum diatur";
   }
 
-  const [year, month, day] = date.split("-").map(Number);
+  const [year, month, day] =
+    date.split("-").map(Number);
 
   if (!year || !month || !day) {
     return date;
   }
 
-  return `${day} ${monthNames[month - 1]} ${year}`;
+  return `${day} ${
+    monthNames[month - 1]
+  } ${year}`;
 }
 
 function getNextDate(date: string) {
@@ -222,17 +284,29 @@ function getNextDate(date: string) {
     return "";
   }
 
-  const [year, month, day] = date.split("-").map(Number);
-  const result = new Date(Date.UTC(year, month - 1, day + 1));
+  const [year, month, day] =
+    date.split("-").map(Number);
+
+  const result = new Date(
+    Date.UTC(year, month - 1, day + 1),
+  );
 
   return [
     result.getUTCFullYear(),
-    String(result.getUTCMonth() + 1).padStart(2, "0"),
-    String(result.getUTCDate()).padStart(2, "0"),
+    String(result.getUTCMonth() + 1).padStart(
+      2,
+      "0",
+    ),
+    String(result.getUTCDate()).padStart(
+      2,
+      "0",
+    ),
   ].join("-");
 }
 
-function getAudienceAppearance(audience: CalendarAudience) {
+function getAudienceAppearance(
+  audience: CalendarAudience,
+) {
   switch (audience) {
     case "Semua peserta":
       return "bg-blue-50 text-blue-700 ring-blue-100";
@@ -252,7 +326,8 @@ function isStoredRundownData(
     return false;
   }
 
-  const data = value as Partial<StoredRundownData>;
+  const data =
+    value as Partial<StoredRundownData>;
 
   return (
     Array.isArray(data.days) &&
@@ -266,11 +341,9 @@ function getUserName(user: User | null) {
     return "Tamu";
   }
 
-  const metadata = user.user_metadata;
-
   return (
-    metadata?.full_name ??
-    metadata?.name ??
+    user.user_metadata?.full_name ??
+    user.user_metadata?.name ??
     user.email?.split("@")[0] ??
     "Pengguna"
   );
@@ -287,6 +360,129 @@ function getUserAvatar(user: User | null) {
     null
   );
 }
+
+function getRoleLabel(
+  role: ProjectRole | undefined,
+) {
+  switch (role) {
+    case "owner":
+      return "Pemilik";
+
+    case "editor":
+      return "Editor";
+
+    case "participant":
+      return "Peserta";
+
+    default:
+      return "Belum ditentukan";
+  }
+}
+
+/* =========================================================
+ * DATABASE FUNCTIONS
+ * ======================================================= */
+
+async function getProjectRole(
+  supabase: SupabaseClient,
+  projectId: string,
+  userId: string,
+  ownerId: string,
+): Promise<ProjectRole> {
+  if (ownerId === userId) {
+    return "owner";
+  }
+
+  const { data, error } = await supabase
+    .from("project_members")
+    .select("role")
+    .eq("project_id", projectId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      `Gagal membaca role: ${error.message}`,
+    );
+  }
+
+  return (
+    (data?.role as ProjectRole | undefined) ??
+    "participant"
+  );
+}
+
+async function getOrCreateDefaultProject(
+  supabase: SupabaseClient,
+  user: User,
+): Promise<RundownProject> {
+  const {
+    data: existingProject,
+    error: selectError,
+  } = await supabase
+    .from("projects")
+    .select(PROJECT_COLUMNS)
+    .order("created_at", {
+      ascending: true,
+    })
+    .limit(1)
+    .maybeSingle();
+
+  if (selectError) {
+    throw new Error(
+      `Gagal membaca proyek: ${selectError.message}`,
+    );
+  }
+
+  if (existingProject) {
+    const project =
+      existingProject as ProjectRow;
+
+    const role = await getProjectRole(
+      supabase,
+      project.id,
+      user.id,
+      project.owner_id,
+    );
+
+    return {
+      ...project,
+      role,
+    };
+  }
+
+  const {
+    data: createdProject,
+    error: insertError,
+  } = await supabase
+    .from("projects")
+    .insert({
+      name: "Keluarga Ketowan",
+      description:
+        "Rundown kegiatan Keluarga Ketowan",
+      owner_id: user.id,
+    })
+    .select(PROJECT_COLUMNS)
+    .single();
+
+  if (insertError || !createdProject) {
+    throw new Error(
+      `Gagal membuat proyek: ${
+        insertError?.message ??
+        "Data proyek tidak dikembalikan."
+      }`,
+    );
+  }
+
+  return {
+    ...(createdProject as ProjectRow),
+    role: "owner",
+  };
+}
+
+/* =========================================================
+ * MAIN COMPONENT
+ * ======================================================= */
 
 export default function Home() {
   const [days, setDays] =
@@ -310,29 +506,49 @@ export default function Home() {
   const [authMessage, setAuthMessage] =
     useState("");
 
+  const [project, setProject] =
+    useState<RundownProject | null>(null);
+
+  const [projectStatus, setProjectStatus] =
+    useState<ProjectStatus>("idle");
+
   const saveTimerRef =
-    useRef<ReturnType<typeof setTimeout> | null>(null);
+    useRef<ReturnType<
+      typeof setTimeout
+    > | null>(null);
+
+  const projectLoadRef =
+    useRef<string | null>(null);
+
+  /* -------------------------------------------------------
+   * LOAD LOCAL DATA
+   * ----------------------------------------------------- */
 
   useEffect(() => {
     try {
       const storedValue =
-        window.localStorage.getItem(STORAGE_KEY);
+        window.localStorage.getItem(
+          STORAGE_KEY,
+        );
 
       if (storedValue) {
         const parsedValue: unknown =
           JSON.parse(storedValue);
 
-        if (isStoredRundownData(parsedValue)) {
+        if (
+          isStoredRundownData(parsedValue)
+        ) {
           setDays(parsedValue.days);
 
-          const savedActiveDayExists =
+          const savedDayStillExists =
             parsedValue.days.some(
               (day) =>
-                day.id === parsedValue.activeDayId,
+                day.id ===
+                parsedValue.activeDayId,
             );
 
           setActiveDayId(
-            savedActiveDayExists
+            savedDayStillExists
               ? parsedValue.activeDayId
               : parsedValue.days[0].id,
           );
@@ -342,7 +558,7 @@ export default function Home() {
       setSaveStatus("saved");
     } catch (error) {
       console.error(
-        "Gagal membaca data rundown:",
+        "Gagal membaca rundown lokal:",
         error,
       );
 
@@ -351,6 +567,10 @@ export default function Home() {
       setStorageReady(true);
     }
   }, []);
+
+  /* -------------------------------------------------------
+   * LOCAL AUTOSAVE
+   * ----------------------------------------------------- */
 
   useEffect(() => {
     if (!storageReady) {
@@ -365,10 +585,11 @@ export default function Home() {
 
     saveTimerRef.current = setTimeout(() => {
       try {
-        const dataToSave: StoredRundownData = {
-          days,
-          activeDayId,
-        };
+        const dataToSave: StoredRundownData =
+          {
+            days,
+            activeDayId,
+          };
 
         window.localStorage.setItem(
           STORAGE_KEY,
@@ -378,7 +599,7 @@ export default function Home() {
         setSaveStatus("saved");
       } catch (error) {
         console.error(
-          "Gagal menyimpan data rundown:",
+          "Gagal menyimpan rundown:",
           error,
         );
 
@@ -388,10 +609,20 @@ export default function Home() {
 
     return () => {
       if (saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
+        clearTimeout(
+          saveTimerRef.current,
+        );
       }
     };
-  }, [days, activeDayId, storageReady]);
+  }, [
+    days,
+    activeDayId,
+    storageReady,
+  ]);
+
+  /* -------------------------------------------------------
+   * AUTH SESSION
+   * ----------------------------------------------------- */
 
   useEffect(() => {
     const supabase = createClient();
@@ -402,28 +633,33 @@ export default function Home() {
         const {
           data: { session },
           error,
-        } = await supabase.auth.getSession();
+        } =
+          await supabase.auth.getSession();
 
         if (error) {
           throw error;
         }
 
-        if (mounted) {
-          setUser(session?.user ?? null);
-          setAuthStatus("idle");
+        if (!mounted) {
+          return;
         }
+
+        setUser(session?.user ?? null);
+        setAuthStatus("idle");
       } catch (error) {
         console.error(
-          "Gagal membaca sesi login:",
+          "Gagal membaca sesi:",
           error,
         );
 
-        if (mounted) {
-          setAuthStatus("error");
-          setAuthMessage(
-            "Sesi login gagal dibaca. Coba muat ulang halaman.",
-          );
+        if (!mounted) {
+          return;
         }
+
+        setAuthStatus("error");
+        setAuthMessage(
+          "Sesi login gagal dibaca. Coba muat ulang halaman.",
+        );
       }
     }
 
@@ -431,16 +667,17 @@ export default function Home() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        if (!mounted) {
-          return;
-        }
+    } =
+      supabase.auth.onAuthStateChange(
+        (_event, session) => {
+          if (!mounted) {
+            return;
+          }
 
-        setUser(session?.user ?? null);
-        setAuthStatus("idle");
-      },
-    );
+          setUser(session?.user ?? null);
+          setAuthStatus("idle");
+        },
+      );
 
     return () => {
       mounted = false;
@@ -448,9 +685,86 @@ export default function Home() {
     };
   }, []);
 
+  /* -------------------------------------------------------
+   * LOAD OR CREATE PROJECT
+   * ----------------------------------------------------- */
+
+useEffect(() => {
+  if (!user) {
+    projectLoadRef.current = null;
+    setProject(null);
+    setProjectStatus("idle");
+    return;
+  }
+
+  // Simpan user yang sudah dipastikan tidak null
+  // ke variabel baru agar TypeScript mengenalinya sebagai User.
+  const currentUser = user;
+
+  if (
+    projectLoadRef.current ===
+    currentUser.id
+  ) {
+    return;
+  }
+
+  projectLoadRef.current =
+    currentUser.id;
+
+  const supabase = createClient();
+  let cancelled = false;
+
+  async function loadProject() {
+    try {
+      setProjectStatus("loading");
+
+      const result =
+        await getOrCreateDefaultProject(
+          supabase,
+          currentUser,
+        );
+
+      if (cancelled) {
+        return;
+      }
+
+      setProject(result);
+      setProjectStatus("ready");
+    } catch (error) {
+      console.error(
+        "Gagal memuat proyek:",
+        error,
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      projectLoadRef.current = null;
+      setProjectStatus("error");
+
+      setAuthMessage(
+        error instanceof Error
+          ? error.message
+          : "Proyek gagal dimuat.",
+      );
+    }
+  }
+
+  void loadProject();
+
+  return () => {
+    cancelled = true;
+  };
+}, [user]);
+  /* -------------------------------------------------------
+   * DERIVED DATA
+   * ----------------------------------------------------- */
+
   const activeDay =
-    days.find((day) => day.id === activeDayId) ??
-    days[0];
+    days.find(
+      (day) => day.id === activeDayId,
+    ) ?? days[0];
 
   const daySummary = useMemo(() => {
     if (!activeDay) {
@@ -464,40 +778,70 @@ export default function Home() {
     let totalMinutes = 0;
     let completedItems = 0;
 
-    activeDay.items.forEach((item, index) => {
-      const startTime =
-        index === 0
-          ? activeDay.firstStartTime
-          : activeDay.items[index - 1].endTime;
+    activeDay.items.forEach(
+      (item, index) => {
+        const startTime =
+          index === 0
+            ? activeDay.firstStartTime
+            : activeDay.items[
+                index - 1
+              ].endTime;
 
-      const duration =
-        calculateDurationMinutes(
-          startTime,
-          item.endTime,
-        );
+        const duration =
+          calculateDurationMinutes(
+            startTime,
+            item.endTime,
+          );
 
-      if (duration !== null) {
-        totalMinutes += duration;
-      }
+        if (duration !== null) {
+          totalMinutes += duration;
+        }
 
-      if (
-        item.activity.trim() &&
-        item.endTime
-      ) {
-        completedItems += 1;
-      }
-    });
+        if (
+          item.activity.trim() &&
+          item.endTime
+        ) {
+          completedItems += 1;
+        }
+      },
+    );
 
     return {
-      totalActivities: activeDay.items.length,
+      totalActivities:
+        activeDay.items.length,
       totalMinutes,
       completedItems,
     };
   }, [activeDay]);
 
+  const userName = getUserName(user);
+  const userAvatar = getUserAvatar(user);
+  const roleLabel = getRoleLabel(
+    project?.role,
+  );
+
+  /*
+   * Mode tamu masih boleh mengedit data lokal.
+   * Peserta login hanya boleh melihat.
+   */
+  const canEdit =
+    !user ||
+    projectStatus !== "ready" ||
+    project?.role !== "participant";
+
+  /* -------------------------------------------------------
+   * EDITOR FUNCTIONS
+   * ----------------------------------------------------- */
+
   function updateActiveDay(
-    updater: (day: RundownDay) => RundownDay,
+    updater: (
+      day: RundownDay,
+    ) => RundownDay,
   ) {
+    if (!canEdit) {
+      return;
+    }
+
     setDays((currentDays) =>
       currentDays.map((day) =>
         day.id === activeDayId
@@ -515,7 +859,10 @@ export default function Home() {
       ...day,
       items: day.items.map((item) =>
         item.id === itemId
-          ? { ...item, ...patch }
+          ? {
+              ...item,
+              ...patch,
+            }
           : item,
       ),
     }));
@@ -540,9 +887,10 @@ export default function Home() {
 
   function duplicateItem(itemId: string) {
     updateActiveDay((day) => {
-      const index = day.items.findIndex(
-        (item) => item.id === itemId,
-      );
+      const index =
+        day.items.findIndex(
+          (item) => item.id === itemId,
+        );
 
       if (index === -1) {
         return day;
@@ -558,7 +906,9 @@ export default function Home() {
           : "",
       };
 
-      const updatedItems = [...day.items];
+      const updatedItems = [
+        ...day.items,
+      ];
 
       updatedItems.splice(
         index + 1,
@@ -603,12 +953,15 @@ export default function Home() {
 
       if (
         targetIndex < 0 ||
-        targetIndex >= day.items.length
+        targetIndex >=
+          day.items.length
       ) {
         return day;
       }
 
-      const updatedItems = [...day.items];
+      const updatedItems = [
+        ...day.items,
+      ];
 
       [
         updatedItems[currentIndex],
@@ -626,6 +979,10 @@ export default function Home() {
   }
 
   function addDay() {
+    if (!canEdit) {
+      return;
+    }
+
     const previousDay =
       days[days.length - 1];
 
@@ -648,7 +1005,7 @@ export default function Home() {
   }
 
   function duplicateActiveDay() {
-    if (!activeDay) {
+    if (!activeDay || !canEdit) {
       return;
     }
 
@@ -656,11 +1013,15 @@ export default function Home() {
       ...activeDay,
       id: createId("day"),
       title: `${activeDay.title} salinan`,
-      date: getNextDate(activeDay.date),
-      items: activeDay.items.map((item) => ({
-        ...item,
-        id: createId("item"),
-      })),
+      date: getNextDate(
+        activeDay.date,
+      ),
+      items: activeDay.items.map(
+        (item) => ({
+          ...item,
+          id: createId("item"),
+        }),
+      ),
     };
 
     setDays((currentDays) => [
@@ -670,6 +1031,10 @@ export default function Home() {
 
     setActiveDayId(copiedDay.id);
   }
+
+  /* -------------------------------------------------------
+   * AUTH FUNCTIONS
+   * ----------------------------------------------------- */
 
   async function handleGoogleLogin() {
     try {
@@ -692,11 +1057,12 @@ export default function Home() {
       }
     } catch (error) {
       console.error(
-        "Gagal masuk menggunakan Google:",
+        "Login Google gagal:",
         error,
       );
 
       setAuthStatus("error");
+
       setAuthMessage(
         error instanceof Error
           ? error.message
@@ -711,6 +1077,7 @@ export default function Home() {
       setAuthMessage("");
 
       const supabase = createClient();
+
       const { error } =
         await supabase.auth.signOut();
 
@@ -718,12 +1085,18 @@ export default function Home() {
         throw error;
       }
 
+      projectLoadRef.current = null;
+      setProject(null);
       setUser(null);
       setAuthStatus("idle");
     } catch (error) {
-      console.error("Gagal keluar:", error);
+      console.error(
+        "Logout gagal:",
+        error,
+      );
 
       setAuthStatus("error");
+
       setAuthMessage(
         error instanceof Error
           ? error.message
@@ -731,6 +1104,10 @@ export default function Home() {
       );
     }
   }
+
+  /* -------------------------------------------------------
+   * STATUS DISPLAY
+   * ----------------------------------------------------- */
 
   const saveStatusText: Record<
     SaveStatus,
@@ -756,15 +1133,18 @@ export default function Home() {
       "bg-red-400/10 text-red-300 ring-red-400/20",
   };
 
-  const userName = getUserName(user);
-  const userAvatar = getUserAvatar(user);
-
   if (!activeDay) {
     return null;
   }
 
+  /* =======================================================
+   * RENDER
+   * ===================================================== */
+
   return (
     <main className="min-h-screen bg-[#f7f8fc] text-slate-950">
+      {/* HEADER */}
+
       <header className="sticky top-0 z-40 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-[1500px] items-center justify-between px-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3">
@@ -773,7 +1153,7 @@ export default function Home() {
             </div>
 
             <div>
-              <p className="font-black tracking-tight text-slate-950">
+              <p className="font-black tracking-tight">
                 Rundownku
               </p>
 
@@ -816,13 +1196,16 @@ export default function Home() {
                     </div>
                   )}
 
-                  <div className="hidden max-w-32 sm:block">
+                  <div className="hidden max-w-36 sm:block">
                     <p className="truncate text-xs font-bold">
                       {userName}
                     </p>
 
                     <p className="text-[10px] text-slate-300">
-                      Pemilik
+                      {projectStatus ===
+                      "loading"
+                        ? "Memuat role..."
+                        : roleLabel}
                     </p>
                   </div>
                 </div>
@@ -841,13 +1224,15 @@ export default function Home() {
                 type="button"
                 onClick={handleGoogleLogin}
                 disabled={
-                  authStatus === "redirecting"
+                  authStatus ===
+                  "redirecting"
                 }
-                className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
+                className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
               >
                 <LogIn size={17} />
 
-                {authStatus === "redirecting"
+                {authStatus ===
+                "redirecting"
                   ? "Mengarahkan..."
                   : "Masuk Google"}
               </button>
@@ -857,13 +1242,17 @@ export default function Home() {
       </header>
 
       <div className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8">
+        {/* ERROR MESSAGE */}
+
         {authMessage && (
           <div className="mb-4 flex items-center justify-between gap-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
             <span>{authMessage}</span>
 
             <button
               type="button"
-              onClick={() => setAuthMessage("")}
+              onClick={() =>
+                setAuthMessage("")
+              }
               className="text-xs font-black"
             >
               Tutup
@@ -871,32 +1260,36 @@ export default function Home() {
           </div>
         )}
 
-        {!user && authStatus !== "loading" && (
-          <div className="mb-4 flex flex-col justify-between gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-4 sm:flex-row sm:items-center">
-            <div>
-              <p className="font-black text-indigo-950">
-                Kamu masih menggunakan mode tamu
-              </p>
+        {/* GUEST NOTICE */}
 
-              <p className="mt-1 text-sm text-indigo-700">
-                Masuk dengan Google agar nanti proyek dapat
-                disimpan online dan dibagikan kepada kolaborator.
-              </p>
+        {!user &&
+          authStatus !== "loading" && (
+            <div className="mb-4 flex flex-col justify-between gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-4 sm:flex-row sm:items-center">
+              <div>
+                <p className="font-black text-indigo-950">
+                  Kamu masih memakai mode
+                  tamu
+                </p>
+
+                <p className="mt-1 text-sm text-indigo-700">
+                  Masuk dengan Google agar
+                  proyek dapat disimpan
+                  online dan dibagikan.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleGoogleLogin}
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-indigo-700"
+              >
+                <LogIn size={17} />
+                Masuk Google
+              </button>
             </div>
+          )}
 
-            <button
-              type="button"
-              onClick={handleGoogleLogin}
-              disabled={
-                authStatus === "redirecting"
-              }
-              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-60"
-            >
-              <LogIn size={17} />
-              Masuk dengan Google
-            </button>
-          </div>
-        )}
+        {/* PROJECT BANNER */}
 
         <section className="overflow-hidden rounded-[28px] bg-slate-950 text-white shadow-2xl shadow-slate-200">
           <div className="relative isolate overflow-hidden px-6 py-7 sm:px-8">
@@ -915,32 +1308,53 @@ export default function Home() {
                     className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ring-1 ${saveStatusAppearance[saveStatus]}`}
                   >
                     <Check size={13} />
-                    {saveStatusText[saveStatus]}
+                    {
+                      saveStatusText[
+                        saveStatus
+                      ]
+                    }
                   </span>
 
-                  <span className="rounded-full bg-indigo-400/10 px-3 py-1 text-xs font-bold text-indigo-200 ring-1 ring-indigo-400/20">
-                    {user
-                      ? "Akun terhubung"
-                      : "Mode tamu"}
-                  </span>
+                  {user && (
+                    <span className="rounded-full bg-indigo-400/10 px-3 py-1 text-xs font-bold text-indigo-200 ring-1 ring-indigo-400/20">
+                      {projectStatus ===
+                      "loading"
+                        ? "Menghubungkan database..."
+                        : projectStatus ===
+                            "ready"
+                          ? roleLabel
+                          : "Akun terhubung"}
+                    </span>
+                  )}
                 </div>
 
                 <h1 className="text-3xl font-black tracking-tight sm:text-4xl">
-                  Keluarga Ketowan
+                  {projectStatus ===
+                  "loading"
+                    ? "Memuat proyek..."
+                    : project?.name ??
+                      "Keluarga Ketowan"}
                 </h1>
 
                 <p className="mt-2 max-w-xl text-sm leading-6 text-slate-300">
-                  Susun seluruh kegiatan dalam satu tempat.
-                  Jam mulai dan durasi dihitung otomatis.
+                  Susun kegiatan dalam satu
+                  tempat. Jam mulai dan durasi
+                  dihitung secara otomatis.
                 </p>
               </div>
 
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  disabled
-                  title="Fitur undangan akan dibuat setelah data proyek terhubung ke database"
-                  className="inline-flex cursor-not-allowed items-center gap-2 rounded-xl bg-white/10 px-4 py-2.5 text-sm font-bold text-white opacity-60 ring-1 ring-white/10"
+                  disabled={
+                    !user ||
+                    projectStatus !==
+                      "ready" ||
+                    project?.role ===
+                      "participant"
+                  }
+                  title="Fitur undangan akan dibuat pada tahap berikutnya"
+                  className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2.5 text-sm font-bold text-white ring-1 ring-white/10 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Users size={17} />
                   Undang orang
@@ -960,6 +1374,8 @@ export default function Home() {
           </div>
         </section>
 
+        {/* SUMMARY */}
+
         <section className="mt-5 grid gap-3 sm:grid-cols-3">
           <SummaryCard
             label="Total kegiatan"
@@ -967,7 +1383,9 @@ export default function Home() {
               daySummary.totalActivities,
             )}
             helper="Dalam tab aktif"
-            icon={<CalendarDays size={18} />}
+            icon={
+              <CalendarDays size={18} />
+            }
           />
 
           <SummaryCard
@@ -988,7 +1406,11 @@ export default function Home() {
         </section>
 
         <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_310px]">
+          {/* EDITOR */}
+
           <section className="min-w-0 overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
+            {/* DAY TABS */}
+
             <div className="border-b border-slate-200 px-4 pt-4 sm:px-6">
               <div className="flex items-center gap-2 overflow-x-auto pb-4">
                 {days.map((day) => {
@@ -1013,22 +1435,27 @@ export default function Home() {
                   );
                 })}
 
-                <button
-                  type="button"
-                  onClick={addDay}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-dashed border-indigo-300 px-4 py-2.5 text-sm font-bold text-indigo-700 transition hover:bg-indigo-50"
-                >
-                  <Plus size={16} />
-                  Tambah hari
-                </button>
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={addDay}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-dashed border-indigo-300 px-4 py-2.5 text-sm font-bold text-indigo-700 hover:bg-indigo-50"
+                  >
+                    <Plus size={16} />
+                    Tambah hari
+                  </button>
+                )}
               </div>
             </div>
+
+            {/* DAY SETTINGS */}
 
             <div className="border-b border-slate-200 bg-slate-50/70 p-4 sm:p-6">
               <div className="grid gap-4 md:grid-cols-[1fr_180px_180px_auto]">
                 <Field label="Nama tab">
                   <input
                     value={activeDay.title}
+                    disabled={!canEdit}
                     onChange={(event) =>
                       updateActiveDay(
                         (day) => ({
@@ -1046,6 +1473,7 @@ export default function Home() {
                   <input
                     type="date"
                     value={activeDay.date}
+                    disabled={!canEdit}
                     onChange={(event) =>
                       updateActiveDay(
                         (day) => ({
@@ -1065,6 +1493,7 @@ export default function Home() {
                     value={
                       activeDay.firstStartTime
                     }
+                    disabled={!canEdit}
                     onChange={(event) =>
                       updateActiveDay(
                         (day) => ({
@@ -1081,8 +1510,11 @@ export default function Home() {
                 <div className="flex items-end">
                   <button
                     type="button"
-                    onClick={duplicateActiveDay}
-                    className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 md:w-auto"
+                    disabled={!canEdit}
+                    onClick={
+                      duplicateActiveDay
+                    }
+                    className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 md:w-auto"
                   >
                     <Copy size={16} />
                     Duplikat
@@ -1091,11 +1523,14 @@ export default function Home() {
               </div>
             </div>
 
+            {/* ITEMS */}
+
             <div className="p-4 sm:p-6">
               <div className="mb-5 flex items-center justify-between gap-4">
                 <div>
                   <h2 className="text-lg font-black">
-                    Rundown {activeDay.title}
+                    Rundown{" "}
+                    {activeDay.title}
                   </h2>
 
                   <p className="mt-1 text-sm text-slate-500">
@@ -1105,13 +1540,19 @@ export default function Home() {
                   </p>
                 </div>
 
-                <p className="hidden text-xs font-semibold text-slate-400 sm:block">
-                  Isi bagian berwarna kuning
-                </p>
+                {!canEdit && (
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600">
+                    Mode lihat
+                  </span>
+                )}
               </div>
 
-              {activeDay.items.length === 0 ? (
-                <EmptyState onAdd={addItem} />
+              {activeDay.items.length ===
+              0 ? (
+                <EmptyState
+                  onAdd={addItem}
+                  canEdit={canEdit}
+                />
               ) : (
                 <div className="space-y-3">
                   {activeDay.items.map(
@@ -1136,13 +1577,15 @@ export default function Home() {
                       return (
                         <article
                           key={item.id}
-                          className={`group relative overflow-hidden rounded-2xl border bg-white transition ${
+                          className={`overflow-hidden rounded-2xl border bg-white transition ${
                             incomplete
                               ? "border-amber-200"
                               : "border-slate-200 hover:border-indigo-200 hover:shadow-lg hover:shadow-slate-100"
                           }`}
                         >
                           <div className="grid lg:grid-cols-[178px_minmax(0,1fr)_150px]">
+                            {/* TIME */}
+
                             <div className="border-b border-slate-200 bg-slate-50 p-4 lg:border-b-0 lg:border-r">
                               <div className="flex items-start justify-between lg:block">
                                 <div>
@@ -1178,47 +1621,51 @@ export default function Home() {
                                   </div>
                                 </div>
 
-                                <div className="flex gap-1 lg:mt-5">
-                                  <SmallIconButton
-                                    label="Pindahkan ke atas"
-                                    disabled={
-                                      index === 0
-                                    }
-                                    onClick={() =>
-                                      moveItem(
-                                        item.id,
-                                        "up",
-                                      )
-                                    }
-                                  >
-                                    <ArrowUp
-                                      size={15}
-                                    />
-                                  </SmallIconButton>
+                                {canEdit && (
+                                  <div className="flex gap-1 lg:mt-5">
+                                    <SmallIconButton
+                                      label="Pindahkan ke atas"
+                                      disabled={
+                                        index === 0
+                                      }
+                                      onClick={() =>
+                                        moveItem(
+                                          item.id,
+                                          "up",
+                                        )
+                                      }
+                                    >
+                                      <ArrowUp
+                                        size={15}
+                                      />
+                                    </SmallIconButton>
 
-                                  <SmallIconButton
-                                    label="Pindahkan ke bawah"
-                                    disabled={
-                                      index ===
-                                      activeDay
-                                        .items
-                                        .length -
-                                        1
-                                    }
-                                    onClick={() =>
-                                      moveItem(
-                                        item.id,
-                                        "down",
-                                      )
-                                    }
-                                  >
-                                    <ArrowDown
-                                      size={15}
-                                    />
-                                  </SmallIconButton>
-                                </div>
+                                    <SmallIconButton
+                                      label="Pindahkan ke bawah"
+                                      disabled={
+                                        index ===
+                                        activeDay
+                                          .items
+                                          .length -
+                                          1
+                                      }
+                                      onClick={() =>
+                                        moveItem(
+                                          item.id,
+                                          "down",
+                                        )
+                                      }
+                                    >
+                                      <ArrowDown
+                                        size={15}
+                                      />
+                                    </SmallIconButton>
+                                  </div>
+                                )}
                               </div>
                             </div>
+
+                            {/* FIELDS */}
 
                             <div className="min-w-0 p-4">
                               <div className="grid gap-3 md:grid-cols-[150px_minmax(0,1fr)]">
@@ -1230,6 +1677,9 @@ export default function Home() {
                                     type="time"
                                     value={
                                       item.endTime
+                                    }
+                                    disabled={
+                                      !canEdit
                                     }
                                     onChange={(
                                       event,
@@ -1258,6 +1708,9 @@ export default function Home() {
                                     value={
                                       item.activity
                                     }
+                                    disabled={
+                                      !canEdit
+                                    }
                                     placeholder="Contoh: Free Time"
                                     onChange={(
                                       event,
@@ -1285,6 +1738,9 @@ export default function Home() {
                                     value={
                                       item.personInCharge
                                     }
+                                    disabled={
+                                      !canEdit
+                                    }
                                     placeholder="Pilih atau tulis PIC"
                                     onChange={(
                                       event,
@@ -1309,6 +1765,9 @@ export default function Home() {
                                   <select
                                     value={
                                       item.audience
+                                    }
+                                    disabled={
+                                      !canEdit
                                     }
                                     onChange={(
                                       event,
@@ -1336,7 +1795,8 @@ export default function Home() {
                                     </option>
 
                                     <option>
-                                      Tidak disinkronkan
+                                      Tidak
+                                      disinkronkan
                                     </option>
                                   </select>
                                 </Field>
@@ -1345,6 +1805,9 @@ export default function Home() {
                               <Field label="Keterangan">
                                 <textarea
                                   value={item.note}
+                                  disabled={
+                                    !canEdit
+                                  }
                                   rows={2}
                                   placeholder="Catatan tambahan, lokasi, atau perlengkapan..."
                                   onChange={(
@@ -1365,6 +1828,8 @@ export default function Home() {
                               </Field>
                             </div>
 
+                            {/* STATUS */}
+
                             <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/70 px-4 py-3 lg:flex-col lg:items-stretch lg:justify-start lg:border-l lg:border-t-0">
                               <span
                                 className={`inline-flex items-center justify-center rounded-full px-3 py-1.5 text-center text-xs font-bold ring-1 ${getAudienceAppearance(
@@ -1376,7 +1841,7 @@ export default function Home() {
 
                               {incomplete ? (
                                 <span className="text-center text-xs font-bold text-amber-700">
-                                  Lengkapi kegiatan
+                                  Belum lengkap
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center justify-center gap-1.5 text-xs font-bold text-emerald-700">
@@ -1387,34 +1852,36 @@ export default function Home() {
                                 </span>
                               )}
 
-                              <div className="flex justify-center gap-1 lg:mt-auto">
-                                <SmallIconButton
-                                  label="Duplikat kegiatan"
-                                  onClick={() =>
-                                    duplicateItem(
-                                      item.id,
-                                    )
-                                  }
-                                >
-                                  <Copy
-                                    size={15}
-                                  />
-                                </SmallIconButton>
+                              {canEdit && (
+                                <div className="flex justify-center gap-1 lg:mt-auto">
+                                  <SmallIconButton
+                                    label="Duplikat kegiatan"
+                                    onClick={() =>
+                                      duplicateItem(
+                                        item.id,
+                                      )
+                                    }
+                                  >
+                                    <Copy
+                                      size={15}
+                                    />
+                                  </SmallIconButton>
 
-                                <SmallIconButton
-                                  label="Hapus kegiatan"
-                                  danger
-                                  onClick={() =>
-                                    deleteItem(
-                                      item.id,
-                                    )
-                                  }
-                                >
-                                  <Trash2
-                                    size={15}
-                                  />
-                                </SmallIconButton>
-                              </div>
+                                  <SmallIconButton
+                                    label="Hapus kegiatan"
+                                    danger
+                                    onClick={() =>
+                                      deleteItem(
+                                        item.id,
+                                      )
+                                    }
+                                  >
+                                    <Trash2
+                                      size={15}
+                                    />
+                                  </SmallIconButton>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </article>
@@ -1424,18 +1891,24 @@ export default function Home() {
                 </div>
               )}
 
-              <button
-                type="button"
-                onClick={addItem}
-                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-indigo-200 bg-indigo-50/40 py-4 font-black text-indigo-700 transition hover:border-indigo-400 hover:bg-indigo-50"
-              >
-                <Plus size={18} />
-                Tambah kegiatan
-              </button>
+              {canEdit && (
+                <button
+                  type="button"
+                  onClick={addItem}
+                  className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-indigo-200 bg-indigo-50/40 py-4 font-black text-indigo-700 hover:border-indigo-400 hover:bg-indigo-50"
+                >
+                  <Plus size={18} />
+                  Tambah kegiatan
+                </button>
+              )}
             </div>
           </section>
 
+          {/* SIDEBAR */}
+
           <aside className="space-y-4">
+            {/* ACCOUNT */}
+
             <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-3">
                 <div className="grid size-10 place-items-center rounded-xl bg-indigo-50 text-indigo-700">
@@ -1467,11 +1940,14 @@ export default function Home() {
               <StatusRow
                 label="Role proyek"
                 value={
-                  user
-                    ? "Pemilik"
-                    : "Belum ditentukan"
+                  projectStatus ===
+                  "loading"
+                    ? "Memuat..."
+                    : roleLabel
                 }
-                completed={Boolean(user)}
+                completed={
+                  projectStatus === "ready"
+                }
               />
 
               {!user && (
@@ -1486,6 +1962,8 @@ export default function Home() {
               )}
             </div>
 
+            {/* REMINDERS */}
+
             <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-3">
                 <div className="grid size-10 place-items-center rounded-xl bg-indigo-50 text-indigo-700">
@@ -1498,7 +1976,7 @@ export default function Home() {
                   </h3>
 
                   <p className="text-xs text-slate-500">
-                    Berlaku saat Calendar aktif
+                    Aktif setelah integrasi
                   </p>
                 </div>
               </div>
@@ -1515,6 +1993,8 @@ export default function Home() {
                 />
               </div>
             </div>
+
+            {/* PROJECT STATUS */}
 
             <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center justify-between">
@@ -1551,29 +2031,47 @@ export default function Home() {
               <StatusRow
                 label="Login Google"
                 value={
-                  user
-                    ? "Aktif"
-                    : "Belum"
+                  user ? "Aktif" : "Belum"
                 }
                 completed={Boolean(user)}
               />
 
               <StatusRow
                 label="Database proyek"
-                value="Belum terhubung"
+                value={
+                  projectStatus === "ready"
+                    ? "Terhubung"
+                    : projectStatus ===
+                        "loading"
+                      ? "Menghubungkan"
+                      : projectStatus ===
+                          "error"
+                        ? "Bermasalah"
+                        : "Belum"
+                }
+                completed={
+                  projectStatus === "ready"
+                }
+              />
+
+              <StatusRow
+                label="Rundown online"
+                value="Belum"
               />
 
               <StatusRow
                 label="Google Calendar"
-                value="Belum terhubung"
+                value="Belum"
               />
 
               <div className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                Login Google sudah disiapkan. Data rundown
-                masih tersimpan pada browser sampai tahap
-                sinkronisasi database selesai.
+                Proyek dan role sudah tersimpan
+                di Supabase. Isi tab dan kegiatan
+                masih tersimpan secara lokal.
               </div>
             </div>
+
+            {/* HELP */}
 
             <div className="rounded-[24px] bg-gradient-to-br from-indigo-600 to-blue-600 p-5 text-white shadow-xl shadow-indigo-100">
               <Sparkles size={21} />
@@ -1583,8 +2081,9 @@ export default function Home() {
               </h3>
 
               <p className="mt-2 text-sm leading-6 text-indigo-100">
-                Isi jam selesai dan nama kegiatan.
-                Jam mulai serta durasi dihitung otomatis.
+                Isi jam selesai dan nama
+                kegiatan. Jam mulai serta
+                durasi akan dihitung otomatis.
               </p>
             </div>
           </aside>
@@ -1593,6 +2092,10 @@ export default function Home() {
     </main>
   );
 }
+
+/* =========================================================
+ * SMALL COMPONENTS
+ * ======================================================= */
 
 function SummaryCard({
   label,
@@ -1613,7 +2116,7 @@ function SummaryCard({
             {label}
           </p>
 
-          <p className="mt-2 text-2xl font-black text-slate-950">
+          <p className="mt-2 text-2xl font-black">
             {value}
           </p>
 
@@ -1743,8 +2246,10 @@ function StatusRow({
 
 function EmptyState({
   onAdd,
+  canEdit,
 }: {
   onAdd: () => void;
+  canEdit: boolean;
 }) {
   return (
     <div className="rounded-2xl border-2 border-dashed border-slate-200 px-6 py-14 text-center">
@@ -1757,18 +2262,21 @@ function EmptyState({
       </h3>
 
       <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">
-        Tambahkan kegiatan pertama. Jam mulai akan
-        mengikuti pengaturan awal tab.
+        {canEdit
+          ? "Tambahkan kegiatan pertama. Jam mulai akan mengikuti pengaturan awal tab."
+          : "Belum ada kegiatan yang ditambahkan pada tab ini."}
       </p>
 
-      <button
-        type="button"
-        onClick={onAdd}
-        className="mt-5 inline-flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white"
-      >
-        <Plus size={17} />
-        Tambah kegiatan
-      </button>
+      {canEdit && (
+        <button
+          type="button"
+          onClick={onAdd}
+          className="mt-5 inline-flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white"
+        >
+          <Plus size={17} />
+          Tambah kegiatan
+        </button>
+      )}
     </div>
   );
 }
