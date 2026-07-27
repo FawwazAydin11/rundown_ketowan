@@ -28,6 +28,7 @@ import {
 } from "react";
 
 import InvitePeopleDialog from "@/components/InvitePeopleDialog";
+import ManageMembersDialog from "@/components/ManageMembersDialog";
 import { createClient } from "@/lib/supabase/client";
 
 /* =========================================================
@@ -649,6 +650,7 @@ export default function Home() {
   const [syncMessage, setSyncMessage] = useState("");
   const [syncAttempt, setSyncAttempt] = useState(0);
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
+  const [membersDialogOpen, setMembersDialogOpen] = useState(false);
 
   const localSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -1596,6 +1598,21 @@ export default function Home() {
 
                 <button
                   type="button"
+                  onClick={() => setMembersDialogOpen(true)}
+                  disabled={!user || projectStatus !== "ready"}
+                  title={
+                    project?.role === "owner"
+                      ? "Lihat dan kelola anggota proyek"
+                      : "Lihat anggota proyek"
+                  }
+                  className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2.5 text-sm font-bold text-white ring-1 ring-white/10 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Users size={17} />
+                  {project?.role === "owner" ? "Kelola anggota" : "Anggota"}
+                </button>
+
+                <button
+                  type="button"
                   disabled
                   title="Google Calendar belum dihubungkan"
                   className="inline-flex cursor-not-allowed items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-black text-slate-950 opacity-70"
@@ -2100,6 +2117,14 @@ export default function Home() {
         projectId={project?.id ?? null}
         projectName={project?.name ?? "Keluarga Ketowan"}
         onClose={() => setInviteDialogOpen(false)}
+      />
+
+      <ManageMembersDialog
+        open={membersDialogOpen}
+        projectId={project?.id ?? null}
+        projectName={project?.name ?? "Keluarga Ketowan"}
+        currentRole={project?.role ?? null}
+        onClose={() => setMembersDialogOpen(false)}
       />
     </main>
   );
