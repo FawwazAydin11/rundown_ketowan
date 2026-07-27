@@ -36,6 +36,7 @@ import ManageMembersDialog from "@/components/ManageMembersDialog";
 import PicMemberSelect, {
   type PicMemberOption,
 } from "@/components/PicMemberSelect";
+import PublishCalendarButton from "@/components/PublishCalendarButton";
 import { createClient } from "@/lib/supabase/client";
 
 /* =========================================================
@@ -1729,19 +1730,24 @@ export default function Home() {
                   {project?.role === "owner" ? "Kelola anggota" : "Anggota"}
                 </button>
 
-                <button
-                  type="button"
-                  disabled
-                  title={
-                    googleCalendarStatus?.connected
-                      ? "Penerbitan event Google Calendar dibuat pada tahap berikutnya"
-                      : "Hubungkan Google Calendar terlebih dahulu"
+                <PublishCalendarButton
+                  projectId={project?.id ?? null}
+                  projectName={project?.name ?? "Keluarga Ketowan"}
+                  canPublish={
+                    Boolean(user) &&
+                    projectStatus === "ready" &&
+                    project?.role === "owner"
                   }
-                  className="inline-flex cursor-not-allowed items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-black text-slate-950 opacity-70"
-                >
-                  <CalendarDays size={17} />
-                  Terbitkan
-                </button>
+                  calendarConnected={Boolean(googleCalendarStatus?.connected)}
+                  saveReady={
+                    remoteLoadStatus === "ready" &&
+                    effectiveSaveStatus === "saved"
+                  }
+                  totalItems={days.reduce(
+                    (total, day) => total + day.items.length,
+                    0,
+                  )}
+                />
               </div>
             </div>
           </div>
