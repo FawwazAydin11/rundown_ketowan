@@ -416,6 +416,10 @@ async function getOrCreateDefaultProject(
   supabase: SupabaseClient,
   user: User,
 ): Promise<RundownProject> {
+  /*
+   * Pertama, cari proyek yang sudah dapat
+   * diakses pengguna melalui policy SELECT.
+   */
   const {
     data: existingProject,
     error: selectError,
@@ -451,24 +455,22 @@ async function getOrCreateDefaultProject(
     };
   }
 
+  /*
+   * Kalau belum ada proyek, panggil fungsi
+   * database yang membuat proyek dan owner
+   * dalam satu transaksi.
+   */
   const {
     data: createdProject,
-    error: insertError,
+    error: createError,
   } = await supabase
-    .from("projects")
-    .insert({
-      name: "Keluarga Ketowan",
-      description:
-        "Rundown kegiatan Keluarga Ketowan",
-      owner_id: user.id,
-    })
-    .select(PROJECT_COLUMNS)
+    .rpc("get_or_create_default_project")
     .single();
 
-  if (insertError || !createdProject) {
+  if (createError || !createdProject) {
     throw new Error(
       `Gagal membuat proyek: ${
-        insertError?.message ??
+        createError?.message ??
         "Data proyek tidak dikembalikan."
       }`,
     );
