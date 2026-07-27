@@ -21,22 +21,12 @@ import {
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import {
   type ReactNode,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
-import GoogleCalendarConnection, {
-  type GoogleCalendarStatus,
-} from "@/components/GoogleCalendarConnection";
-import InvitePeopleDialog from "@/components/InvitePeopleDialog";
-import ManageMembersDialog from "@/components/ManageMembersDialog";
-import PicMemberSelect, {
-  type PicMemberOption,
-} from "@/components/PicMemberSelect";
-import PublishCalendarButton from "@/components/PublishCalendarButton";
 import { createClient } from "@/lib/supabase/client";
 
 /* =========================================================
@@ -59,7 +49,6 @@ type RundownItem = {
   activity: string;
   note: string;
   personInCharge: string;
-  assigneeIds: string[];
   audience: CalendarAudience;
 };
 
@@ -109,7 +98,6 @@ type RemoteItemPayload = {
   activity: string;
   note: string;
   personInCharge: string;
-  assigneeIds: string[];
   calendarScope: CalendarScope;
 };
 
@@ -121,18 +109,11 @@ type RemoteDayPayload = {
   items: RemoteItemPayload[];
 };
 
-type MembersResponse = {
-  projectId: string;
-  members: PicMemberOption[];
-  total: number;
-};
-
 /* =========================================================
  * CONSTANTS
  * ======================================================= */
 
 const GUEST_STORAGE_KEY = "rundownku-guest-v4";
-const PREFERRED_PROJECT_STORAGE_KEY = "rundownku-preferred-project-id";
 
 const LEGACY_STORAGE_KEYS = [
   "rundownku-data-v3",
@@ -162,7 +143,6 @@ const initialDays: RundownDay[] = [
         activity: "Free Time",
         note: "",
         personInCharge: "",
-        assigneeIds: [],
         audience: "Semua peserta",
       },
       {
@@ -171,7 +151,6 @@ const initialDays: RundownDay[] = [
         activity: "Ambil tai sapi",
         note: "",
         personInCharge: "",
-        assigneeIds: [],
         audience: "Hanya PIC",
       },
       {
@@ -180,7 +159,6 @@ const initialDays: RundownDay[] = [
         activity: "Free Time",
         note: "",
         personInCharge: "",
-        assigneeIds: [],
         audience: "Semua peserta",
       },
       {
@@ -189,7 +167,6 @@ const initialDays: RundownDay[] = [
         activity: "Melanjutkan proses pembuatan mie",
         note: "",
         personInCharge: "",
-        assigneeIds: [],
         audience: "Hanya PIC",
       },
       {
@@ -198,7 +175,6 @@ const initialDays: RundownDay[] = [
         activity: "Free Time",
         note: "",
         personInCharge: "",
-        assigneeIds: [],
         audience: "Semua peserta",
       },
       {
@@ -207,7 +183,6 @@ const initialDays: RundownDay[] = [
         activity: "pengajian anjay bersama ebok",
         note: "",
         personInCharge: "",
-        assigneeIds: [],
         audience: "Semua peserta",
       },
     ],
@@ -360,20 +335,6 @@ function scopeToAudience(scope: unknown): CalendarAudience {
   }
 }
 
-function ensureAssigneeIds(days: RundownDay[]): RundownDay[] {
-  return days.map((day) => ({
-    ...day,
-    items: day.items.map((item) => ({
-      ...item,
-      assigneeIds: Array.isArray(item.assigneeIds)
-        ? item.assigneeIds.filter(
-            (value): value is string => typeof value === "string",
-          )
-        : [],
-    })),
-  }));
-}
-
 function isStoredRundownData(value: unknown): value is StoredRundownData {
   if (!value || typeof value !== "object") {
     return false;
@@ -397,14 +358,7 @@ function readStoredRundown(key: string): StoredRundownData | null {
     }
 
     const parsedValue: unknown = JSON.parse(storedValue);
-    if (!isStoredRundownData(parsedValue)) {
-      return null;
-    }
-
-    return {
-      ...parsedValue,
-      days: ensureAssigneeIds(parsedValue.days),
-    };
+    return isStoredRundownData(parsedValue) ? parsedValue : null;
   } catch (error) {
     console.error(`Gagal membaca penyimpanan lokal ${key}:`, error);
     return null;
@@ -461,7 +415,6 @@ function toRemotePayload(days: RundownDay[]): RemoteDayPayload[] {
       activity: item.activity,
       note: item.note,
       personInCharge: item.personInCharge,
-      assigneeIds: Array.isArray(item.assigneeIds) ? item.assigneeIds : [],
       calendarScope: audienceToScope(item.audience),
     })),
   }));
@@ -517,11 +470,6 @@ function normalizeRemoteRundown(value: unknown): RundownDay[] {
               typeof item.personInCharge === "string"
                 ? item.personInCharge
                 : "",
-            assigneeIds: Array.isArray(item.assigneeIds)
-              ? item.assigneeIds.filter(
-                  (value): value is string => typeof value === "string",
-                )
-              : [],
             audience: scopeToAudience(item.calendarScope),
           };
         })
@@ -576,32 +524,7 @@ async function getProjectRole(
 async function getOrCreateDefaultProject(
   supabase: SupabaseClient,
   user: User,
-  preferredProjectId?: string | null,
 ): Promise<RundownProject> {
-  if (preferredProjectId) {
-    const { data: preferredProject, error: preferredError } = await supabase
-      .from("projects")
-      .select(PROJECT_COLUMNS)
-      .eq("id", preferredProjectId)
-      .maybeSingle();
-
-    if (preferredError) {
-      throw new Error(`Gagal membaca proyek pilihan: ${preferredError.message}`);
-    }
-
-    if (preferredProject) {
-      const project = preferredProject as ProjectRow;
-      const role = await getProjectRole(
-        supabase,
-        project.id,
-        user.id,
-        project.owner_id,
-      );
-
-      return { ...project, role };
-    }
-  }
-
   const { data: existingProject, error: selectError } = await supabase
     .from("projects")
     .select(PROJECT_COLUMNS)
@@ -698,22 +621,6 @@ export default function Home() {
     useState<SaveStatus>("loading");
   const [syncMessage, setSyncMessage] = useState("");
   const [syncAttempt, setSyncAttempt] = useState(0);
-  const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
-  const [membersDialogOpen, setMembersDialogOpen] = useState(false);
-  const [projectMembers, setProjectMembers] = useState<PicMemberOption[]>([]);
-  const [membersLoadStatus, setMembersLoadStatus] = useState<
-    "idle" | "loading" | "ready" | "error"
-  >("idle");
-  const [membersReloadToken, setMembersReloadToken] = useState(0);
-  const [googleCalendarStatus, setGoogleCalendarStatus] =
-    useState<GoogleCalendarStatus | null>(null);
-
-  const handleGoogleCalendarStatusChange = useCallback(
-    (status: GoogleCalendarStatus) => {
-      setGoogleCalendarStatus(status);
-    },
-    [],
-  );
 
   const localSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -903,24 +810,14 @@ export default function Home() {
       try {
         setProjectStatus("loading");
 
-        const preferredProjectId = window.localStorage.getItem(
-          PREFERRED_PROJECT_STORAGE_KEY,
-        );
-
         const result = await getOrCreateDefaultProject(
           supabase,
           currentUser,
-          preferredProjectId,
         );
 
         if (cancelled) {
           return;
         }
-
-        window.localStorage.setItem(
-          PREFERRED_PROJECT_STORAGE_KEY,
-          result.id,
-        );
 
         setProject(result);
         setProjectStatus("ready");
@@ -945,61 +842,6 @@ export default function Home() {
       cancelled = true;
     };
   }, [user]);
-
-  /* -------------------------------------------------------
-   * LOAD PROJECT MEMBERS FOR PIC SELECTOR
-   * ----------------------------------------------------- */
-
-  useEffect(() => {
-    if (!user || !project || projectStatus !== "ready") {
-      setProjectMembers([]);
-      setMembersLoadStatus("idle");
-      return;
-    }
-
-    const supabase = createClient();
-    const projectId = project.id;
-    let cancelled = false;
-
-    async function loadProjectMembers() {
-      try {
-        setMembersLoadStatus("loading");
-
-        const { data, error } = await supabase.rpc("get_project_members", {
-          p_project_id: projectId,
-        });
-
-        if (error) {
-          throw error;
-        }
-
-        if (cancelled) {
-          return;
-        }
-
-        const response = data as MembersResponse | null;
-        setProjectMembers(
-          Array.isArray(response?.members) ? response.members : [],
-        );
-        setMembersLoadStatus("ready");
-      } catch (error) {
-        console.error("Gagal memuat anggota untuk PIC:", error);
-
-        if (cancelled) {
-          return;
-        }
-
-        setProjectMembers([]);
-        setMembersLoadStatus("error");
-      }
-    }
-
-    void loadProjectMembers();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [membersReloadToken, project, projectStatus, user]);
 
   /* -------------------------------------------------------
    * LOAD ONLINE RUNDOWN OR MIGRATE LOCAL DATA
@@ -1335,7 +1177,6 @@ export default function Home() {
           activity: "",
           note: "",
           personInCharge: "",
-          assigneeIds: [],
           audience: "Hanya PIC",
         },
       ],
@@ -1698,17 +1539,12 @@ export default function Home() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => setInviteDialogOpen(true)}
                   disabled={
                     !user ||
                     projectStatus !== "ready" ||
-                    project?.role !== "owner"
+                    project?.role === "participant"
                   }
-                  title={
-                    project?.role === "owner"
-                      ? "Buat tautan undangan editor atau peserta"
-                      : "Hanya pemilik proyek yang dapat mengundang orang"
-                  }
+                  title="Fitur undangan akan dibuat pada tahap berikutnya"
                   className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2.5 text-sm font-bold text-white ring-1 ring-white/10 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Users size={17} />
@@ -1717,37 +1553,13 @@ export default function Home() {
 
                 <button
                   type="button"
-                  onClick={() => setMembersDialogOpen(true)}
-                  disabled={!user || projectStatus !== "ready"}
-                  title={
-                    project?.role === "owner"
-                      ? "Lihat dan kelola anggota proyek"
-                      : "Lihat anggota proyek"
-                  }
-                  className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2.5 text-sm font-bold text-white ring-1 ring-white/10 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled
+                  title="Google Calendar belum dihubungkan"
+                  className="inline-flex cursor-not-allowed items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-black text-slate-950 opacity-70"
                 >
-                  <Users size={17} />
-                  {project?.role === "owner" ? "Kelola anggota" : "Anggota"}
+                  <CalendarDays size={17} />
+                  Terbitkan
                 </button>
-
-                <PublishCalendarButton
-                  projectId={project?.id ?? null}
-                  projectName={project?.name ?? "Keluarga Ketowan"}
-                  canPublish={
-                    Boolean(user) &&
-                    projectStatus === "ready" &&
-                    project?.role === "owner"
-                  }
-                  calendarConnected={Boolean(googleCalendarStatus?.connected)}
-                  saveReady={
-                    remoteLoadStatus === "ready" &&
-                    effectiveSaveStatus === "saved"
-                  }
-                  totalItems={days.reduce(
-                    (total, day) => total + day.items.length,
-                    0,
-                  )}
-                />
               </div>
             </div>
           </div>
@@ -1990,47 +1802,17 @@ export default function Home() {
 
                             <div className="mt-3 grid gap-3 md:grid-cols-2">
                               <Field label="Penanggung jawab">
-                                {user ? (
-                                  <PicMemberSelect
-                                    members={projectMembers}
-                                    selectedIds={item.assigneeIds}
-                                    legacyName={item.personInCharge}
-                                    disabled={!canEdit}
-                                    loading={membersLoadStatus === "loading"}
-                                    loadError={membersLoadStatus === "error"}
-                                    onRefresh={() =>
-                                      setMembersReloadToken((value) => value + 1)
-                                    }
-                                    onChange={(assigneeIds) => {
-                                      const selectedNames = assigneeIds
-                                        .map(
-                                          (userId) =>
-                                            projectMembers.find(
-                                              (member) => member.userId === userId,
-                                            )?.fullName ?? "",
-                                        )
-                                        .filter(Boolean)
-                                        .join(", ");
-
-                                      patchItem(item.id, {
-                                        assigneeIds,
-                                        personInCharge: selectedNames,
-                                      });
-                                    }}
-                                  />
-                                ) : (
-                                  <input
-                                    value={item.personInCharge}
-                                    disabled={!canEdit}
-                                    placeholder="Masuk Google untuk memilih anggota"
-                                    onChange={(event) =>
-                                      patchItem(item.id, {
-                                        personInCharge: event.target.value,
-                                      })
-                                    }
-                                    className={INPUT_BASE}
-                                  />
-                                )}
+                                <input
+                                  value={item.personInCharge}
+                                  disabled={!canEdit}
+                                  placeholder="Tulis nama PIC"
+                                  onChange={(event) =>
+                                    patchItem(item.id, {
+                                      personInCharge: event.target.value,
+                                    })
+                                  }
+                                  className={INPUT_BASE}
+                                />
                               </Field>
 
                               <Field label="Penerima Calendar">
@@ -2161,11 +1943,6 @@ export default function Home() {
               )}
             </div>
 
-            <GoogleCalendarConnection
-              loggedIn={Boolean(user)}
-              onStatusChange={handleGoogleCalendarStatusChange}
-            />
-
             <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-3">
                 <div className="grid size-10 place-items-center rounded-xl bg-indigo-50 text-indigo-700">
@@ -2255,17 +2032,7 @@ export default function Home() {
                 }
               />
 
-              <StatusRow
-                label="Google Calendar"
-                value={
-                  !user
-                    ? "Belum login"
-                    : googleCalendarStatus?.connected
-                      ? "Terhubung"
-                      : "Belum"
-                }
-                completed={Boolean(googleCalendarStatus?.connected)}
-              />
+              <StatusRow label="Google Calendar" value="Belum" />
 
               <div className="mt-4 rounded-xl bg-emerald-50 p-3 text-xs leading-5 text-emerald-800">
                 Saat login, hari dan kegiatan tersimpan di Supabase. Cadangan lokal
@@ -2284,24 +2051,6 @@ export default function Home() {
           </aside>
         </div>
       </div>
-
-      <InvitePeopleDialog
-        open={inviteDialogOpen}
-        projectId={project?.id ?? null}
-        projectName={project?.name ?? "Keluarga Ketowan"}
-        onClose={() => setInviteDialogOpen(false)}
-      />
-
-      <ManageMembersDialog
-        open={membersDialogOpen}
-        projectId={project?.id ?? null}
-        projectName={project?.name ?? "Keluarga Ketowan"}
-        currentRole={project?.role ?? null}
-        onMembersChanged={() =>
-          setMembersReloadToken((value) => value + 1)
-        }
-        onClose={() => setMembersDialogOpen(false)}
-      />
     </main>
   );
 }
