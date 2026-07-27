@@ -1,6 +1,5 @@
 "use client";
 
-import { createClient } from "@/lib/supabase/client";
 import {
   ArrowDown,
   ArrowUp,
@@ -9,6 +8,8 @@ import {
   Check,
   Clock3,
   Copy,
+  LogIn,
+  LogOut,
   MoreHorizontal,
   Plus,
   Sparkles,
@@ -16,6 +17,7 @@ import {
   UserRound,
   Users,
 } from "lucide-react";
+import type { User } from "@supabase/supabase-js";
 import {
   type ReactNode,
   useEffect,
@@ -23,6 +25,8 @@ import {
   useRef,
   useState,
 } from "react";
+
+import { createClient } from "@/lib/supabase/client";
 
 type CalendarAudience =
   | "Semua peserta"
@@ -48,12 +52,14 @@ type RundownDay = {
 
 type SaveStatus = "loading" | "saving" | "saved" | "error";
 
+type AuthStatus = "loading" | "idle" | "redirecting" | "error";
+
 type StoredRundownData = {
   days: RundownDay[];
   activeDayId: string;
 };
 
-const STORAGE_KEY = "rundownku-data-v1";
+const STORAGE_KEY = "rundownku-data-v2";
 
 const INPUT_BASE =
   "h-11 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100";
@@ -255,6 +261,33 @@ function isStoredRundownData(
   );
 }
 
+function getUserName(user: User | null) {
+  if (!user) {
+    return "Tamu";
+  }
+
+  const metadata = user.user_metadata;
+
+  return (
+    metadata?.full_name ??
+    metadata?.name ??
+    user.email?.split("@")[0] ??
+    "Pengguna"
+  );
+}
+
+function getUserAvatar(user: User | null) {
+  if (!user) {
+    return null;
+  }
+
+  return (
+    user.user_metadata?.avatar_url ??
+    user.user_metadata?.picture ??
+    null
+  );
+}
+
 export default function Home() {
   const [days, setDays] =
     useState<RundownDay[]>(initialDays);
@@ -267,6 +300,15 @@ export default function Home() {
 
   const [saveStatus, setSaveStatus] =
     useState<SaveStatus>("loading");
+
+  const [user, setUser] =
+    useState<User | null>(null);
+
+  const [authStatus, setAuthStatus] =
+    useState<AuthStatus>("loading");
+
+  const [authMessage, setAuthMessage] =
+    useState("");
 
   const saveTimerRef =
     useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -350,6 +392,61 @@ export default function Home() {
       }
     };
   }, [days, activeDayId, storageReady]);
+
+  useEffect(() => {
+    const supabase = createClient();
+    let mounted = true;
+
+    async function loadSession() {
+      try {
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
+
+        if (error) {
+          throw error;
+        }
+
+        if (mounted) {
+          setUser(session?.user ?? null);
+          setAuthStatus("idle");
+        }
+      } catch (error) {
+        console.error(
+          "Gagal membaca sesi login:",
+          error,
+        );
+
+        if (mounted) {
+          setAuthStatus("error");
+          setAuthMessage(
+            "Sesi login gagal dibaca. Coba muat ulang halaman.",
+          );
+        }
+      }
+    }
+
+    void loadSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (!mounted) {
+          return;
+        }
+
+        setUser(session?.user ?? null);
+        setAuthStatus("idle");
+      },
+    );
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   const activeDay =
     days.find((day) => day.id === activeDayId) ??
@@ -574,6 +671,67 @@ export default function Home() {
     setActiveDayId(copiedDay.id);
   }
 
+  async function handleGoogleLogin() {
+    try {
+      setAuthStatus("redirecting");
+      setAuthMessage("");
+
+      const supabase = createClient();
+
+      const { error } =
+        await supabase.auth.signInWithOAuth({
+          provider: "google",
+          options: {
+            redirectTo:
+              `${window.location.origin}/auth/callback?next=/`,
+          },
+        });
+
+      if (error) {
+        throw error;
+      }
+    } catch (error) {
+      console.error(
+        "Gagal masuk menggunakan Google:",
+        error,
+      );
+
+      setAuthStatus("error");
+      setAuthMessage(
+        error instanceof Error
+          ? error.message
+          : "Login Google gagal.",
+      );
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      setAuthStatus("loading");
+      setAuthMessage("");
+
+      const supabase = createClient();
+      const { error } =
+        await supabase.auth.signOut();
+
+      if (error) {
+        throw error;
+      }
+
+      setUser(null);
+      setAuthStatus("idle");
+    } catch (error) {
+      console.error("Gagal keluar:", error);
+
+      setAuthStatus("error");
+      setAuthMessage(
+        error instanceof Error
+          ? error.message
+          : "Gagal keluar dari akun.",
+      );
+    }
+  }
+
   const saveStatusText: Record<
     SaveStatus,
     string
@@ -597,6 +755,9 @@ export default function Home() {
     error:
       "bg-red-400/10 text-red-300 ring-red-400/20",
   };
+
+  const userName = getUserName(user);
+  const userAvatar = getUserAvatar(user);
 
   if (!activeDay) {
     return null;
@@ -636,35 +797,107 @@ export default function Home() {
               {saveStatusText[saveStatus]}
             </div>
 
-            <button
-              type="button"
-              disabled
-              title="Fitur anggota akan dibuat setelah database terhubung"
-              className="grid size-10 cursor-not-allowed place-items-center rounded-xl border border-slate-200 bg-white text-slate-400"
-            >
-              <Users size={18} />
-            </button>
+            {authStatus === "loading" ? (
+              <div className="h-10 w-32 animate-pulse rounded-full bg-slate-200" />
+            ) : user ? (
+              <>
+                <div className="flex items-center gap-2 rounded-full bg-slate-950 py-1.5 pl-1.5 pr-3 text-white">
+                  {userAvatar ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={userAvatar}
+                      alt={userName}
+                      className="size-8 rounded-full object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="grid size-8 place-items-center rounded-full bg-white/15">
+                      <UserRound size={16} />
+                    </div>
+                  )}
 
-            <div className="flex items-center gap-2 rounded-full bg-slate-950 py-1.5 pl-1.5 pr-3 text-white">
-              <div className="grid size-8 place-items-center rounded-full bg-white/15">
-                <UserRound size={16} />
-              </div>
+                  <div className="hidden max-w-32 sm:block">
+                    <p className="truncate text-xs font-bold">
+                      {userName}
+                    </p>
 
-              <div className="hidden sm:block">
-                <p className="text-xs font-bold">
-                  Pemilik
-                </p>
+                    <p className="text-[10px] text-slate-300">
+                      Pemilik
+                    </p>
+                  </div>
+                </div>
 
-                <p className="text-[10px] text-slate-300">
-                  Kamu
-                </p>
-              </div>
-            </div>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  title="Keluar"
+                  className="grid size-10 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                >
+                  <LogOut size={17} />
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={handleGoogleLogin}
+                disabled={
+                  authStatus === "redirecting"
+                }
+                className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
+              >
+                <LogIn size={17} />
+
+                {authStatus === "redirecting"
+                  ? "Mengarahkan..."
+                  : "Masuk Google"}
+              </button>
+            )}
           </div>
         </div>
       </header>
 
       <div className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8">
+        {authMessage && (
+          <div className="mb-4 flex items-center justify-between gap-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+            <span>{authMessage}</span>
+
+            <button
+              type="button"
+              onClick={() => setAuthMessage("")}
+              className="text-xs font-black"
+            >
+              Tutup
+            </button>
+          </div>
+        )}
+
+        {!user && authStatus !== "loading" && (
+          <div className="mb-4 flex flex-col justify-between gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-4 sm:flex-row sm:items-center">
+            <div>
+              <p className="font-black text-indigo-950">
+                Kamu masih menggunakan mode tamu
+              </p>
+
+              <p className="mt-1 text-sm text-indigo-700">
+                Masuk dengan Google agar nanti proyek dapat
+                disimpan online dan dibagikan kepada kolaborator.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleGoogleLogin}
+              disabled={
+                authStatus === "redirecting"
+              }
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-60"
+            >
+              <LogIn size={17} />
+              Masuk dengan Google
+            </button>
+          </div>
+        )}
+
         <section className="overflow-hidden rounded-[28px] bg-slate-950 text-white shadow-2xl shadow-slate-200">
           <div className="relative isolate overflow-hidden px-6 py-7 sm:px-8">
             <div className="absolute -right-24 -top-32 -z-10 size-80 rounded-full bg-indigo-500/30 blur-3xl" />
@@ -679,15 +912,16 @@ export default function Home() {
                   </span>
 
                   <span
-                    className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ring-1 ${
-                      saveStatusAppearance[
-                        saveStatus
-                      ]
-                    }`}
+                    className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ring-1 ${saveStatusAppearance[saveStatus]}`}
                   >
                     <Check size={13} />
-
                     {saveStatusText[saveStatus]}
+                  </span>
+
+                  <span className="rounded-full bg-indigo-400/10 px-3 py-1 text-xs font-bold text-indigo-200 ring-1 ring-indigo-400/20">
+                    {user
+                      ? "Akun terhubung"
+                      : "Mode tamu"}
                   </span>
                 </div>
 
@@ -696,9 +930,8 @@ export default function Home() {
                 </h1>
 
                 <p className="mt-2 max-w-xl text-sm leading-6 text-slate-300">
-                  Susun seluruh kegiatan dalam satu
-                  tempat. Jam mulai dan durasi akan
-                  dihitung otomatis.
+                  Susun seluruh kegiatan dalam satu tempat.
+                  Jam mulai dan durasi dihitung otomatis.
                 </p>
               </div>
 
@@ -706,6 +939,7 @@ export default function Home() {
                 <button
                   type="button"
                   disabled
+                  title="Fitur undangan akan dibuat setelah data proyek terhubung ke database"
                   className="inline-flex cursor-not-allowed items-center gap-2 rounded-xl bg-white/10 px-4 py-2.5 text-sm font-bold text-white opacity-60 ring-1 ring-white/10"
                 >
                   <Users size={17} />
@@ -1102,8 +1336,7 @@ export default function Home() {
                                     </option>
 
                                     <option>
-                                      Tidak
-                                      disinkronkan
+                                      Tidak disinkronkan
                                     </option>
                                   </select>
                                 </Field>
@@ -1143,8 +1376,7 @@ export default function Home() {
 
                               {incomplete ? (
                                 <span className="text-center text-xs font-bold text-amber-700">
-                                  Lengkapi
-                                  kegiatan
+                                  Lengkapi kegiatan
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center justify-center gap-1.5 text-xs font-bold text-emerald-700">
@@ -1207,6 +1439,56 @@ export default function Home() {
             <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-3">
                 <div className="grid size-10 place-items-center rounded-xl bg-indigo-50 text-indigo-700">
+                  <UserRound size={19} />
+                </div>
+
+                <div className="min-w-0">
+                  <h3 className="truncate font-black">
+                    {userName}
+                  </h3>
+
+                  <p className="truncate text-xs text-slate-500">
+                    {user?.email ??
+                      "Belum masuk akun"}
+                  </p>
+                </div>
+              </div>
+
+              <StatusRow
+                label="Status akun"
+                value={
+                  user
+                    ? "Terhubung"
+                    : "Mode tamu"
+                }
+                completed={Boolean(user)}
+              />
+
+              <StatusRow
+                label="Role proyek"
+                value={
+                  user
+                    ? "Pemilik"
+                    : "Belum ditentukan"
+                }
+                completed={Boolean(user)}
+              />
+
+              {!user && (
+                <button
+                  type="button"
+                  onClick={handleGoogleLogin}
+                  className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-800"
+                >
+                  <LogIn size={16} />
+                  Masuk Google
+                </button>
+              )}
+            </div>
+
+            <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center gap-3">
+                <div className="grid size-10 place-items-center rounded-xl bg-indigo-50 text-indigo-700">
                   <BellRing size={19} />
                 </div>
 
@@ -1242,7 +1524,7 @@ export default function Home() {
                   </h3>
 
                   <p className="mt-1 text-xs text-slate-500">
-                    Integrasi belum diaktifkan
+                    Tahap integrasi
                   </p>
                 </div>
 
@@ -1253,7 +1535,7 @@ export default function Home() {
               </div>
 
               <StatusRow
-                label="Data rundown"
+                label="Data lokal"
                 value={
                   saveStatus === "saved"
                     ? "Tersimpan"
@@ -1267,19 +1549,29 @@ export default function Home() {
               />
 
               <StatusRow
-                label="Database"
-                value="Belum"
+                label="Login Google"
+                value={
+                  user
+                    ? "Aktif"
+                    : "Belum"
+                }
+                completed={Boolean(user)}
+              />
+
+              <StatusRow
+                label="Database proyek"
+                value="Belum terhubung"
               />
 
               <StatusRow
                 label="Google Calendar"
-                value="Belum"
+                value="Belum terhubung"
               />
 
               <div className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                Data tersimpan pada browser dan
-                perangkat ini. Penyimpanan lintas
-                perangkat akan menggunakan database.
+                Login Google sudah disiapkan. Data rundown
+                masih tersimpan pada browser sampai tahap
+                sinkronisasi database selesai.
               </div>
             </div>
 
@@ -1292,8 +1584,7 @@ export default function Home() {
 
               <p className="mt-2 text-sm leading-6 text-indigo-100">
                 Isi jam selesai dan nama kegiatan.
-                Jam mulai serta durasi dihitung
-                otomatis.
+                Jam mulai serta durasi dihitung otomatis.
               </p>
             </div>
           </aside>
@@ -1432,13 +1723,13 @@ function StatusRow({
   completed?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between border-b border-slate-100 py-3 last:border-0">
+    <div className="flex items-center justify-between gap-4 border-b border-slate-100 py-3 last:border-0">
       <span className="text-sm text-slate-600">
         {label}
       </span>
 
       <span
-        className={`text-xs font-bold ${
+        className={`text-right text-xs font-bold ${
           completed
             ? "text-emerald-700"
             : "text-slate-400"
