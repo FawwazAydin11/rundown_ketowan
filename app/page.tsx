@@ -86,6 +86,12 @@ type RemoteLoadStatus =
   | "ready"
   | "error";
 
+type RealtimeStatus =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "error";
+
 type ProjectRole = "owner" | "editor" | "participant";
 
 type RundownProject = {
@@ -751,6 +757,9 @@ export default function Home() {
     useState<GoogleCalendarStatus | null>(null);
   const [calendarPublishStatus, setCalendarPublishStatus] =
     useState<CalendarPublishStatus | null>(null);
+  const [realtimeStatus, setRealtimeStatus] =
+    useState<RealtimeStatus>("idle");
+  const [realtimeRefreshToken, setRealtimeRefreshToken] = useState(0);
 
   const handleGoogleCalendarStatusChange = useCallback(
     (status: GoogleCalendarStatus) => {
@@ -772,6 +781,11 @@ export default function Home() {
   const activeDayIdRef = useRef(activeDayId);
   const openingDaySelectionRef = useRef<string | null>(null);
   const activeDayTabRef = useRef<HTMLButtonElement | null>(null);
+  const realtimeSignalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const pendingRealtimeRefreshRef = useRef(false);
+  const realtimeFetchInFlightRef = useRef(false);
 
   useEffect(() => {
     daysRef.current = days;
@@ -1230,6 +1244,11 @@ export default function Home() {
 
           lastRemoteSnapshotRef.current = snapshot;
           setRemoteSaveStatus("saved");
+
+          if (pendingRealtimeRefreshRef.current) {
+            pendingRealtimeRefreshRef.current = false;
+            setRealtimeRefreshToken((value) => value + 1);
+          }
         } catch (error) {
           console.error("Autosave online gagal:", error);
 
@@ -1255,6 +1274,206 @@ export default function Home() {
       }
     };
   }, [days, project, projectStatus, remoteLoadStatus, user]);
+
+  /* -------------------------------------------------------
+   * SUPABASE REALTIME SUBSCRIPTION
+   * ----------------------------------------------------- */
+
+  useEffect(() => {
+    if (
+      !user ||
+      !project ||
+      projectStatus !== "ready" ||
+      remoteLoadStatus !== "ready"
+    ) {
+      setRealtimeStatus("idle");
+      return;
+    }
+
+    const supabase = createClient();
+    const projectId = project.id;
+    let disposed = false;
+
+    function queueRundownRefresh() {
+      if (realtimeSignalTimerRef.current) {
+        clearTimeout(realtimeSignalTimerRef.current);
+      }
+
+      realtimeSignalTimerRef.current = setTimeout(() => {
+        if (!disposed) {
+          setRealtimeRefreshToken((value) => value + 1);
+        }
+      }, 650);
+    }
+
+    function queueMemberRefresh() {
+      setMembersReloadToken((value) => value + 1);
+      queueRundownRefresh();
+    }
+
+    setRealtimeStatus("connecting");
+
+    const channel = supabase
+      .channel(`rundown-project-${projectId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "rundown_days",
+          filter: `project_id=eq.${projectId}`,
+        },
+        queueRundownRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "rundown_items",
+        },
+        queueRundownRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "rundown_item_assignees",
+        },
+        queueRundownRefresh,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "project_members",
+          filter: `project_id=eq.${projectId}`,
+        },
+        queueMemberRefresh,
+      )
+      .subscribe((status) => {
+        if (disposed) {
+          return;
+        }
+
+        if (status === "SUBSCRIBED") {
+          setRealtimeStatus("connected");
+          return;
+        }
+
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          setRealtimeStatus("error");
+          return;
+        }
+
+        if (status === "CLOSED") {
+          setRealtimeStatus("idle");
+        }
+      });
+
+    return () => {
+      disposed = true;
+
+      if (realtimeSignalTimerRef.current) {
+        clearTimeout(realtimeSignalTimerRef.current);
+        realtimeSignalTimerRef.current = null;
+      }
+
+      void supabase.removeChannel(channel);
+    };
+  }, [project?.id, projectStatus, remoteLoadStatus, user?.id]);
+
+  /* -------------------------------------------------------
+   * APPLY REALTIME CHANGES
+   * ----------------------------------------------------- */
+
+  useEffect(() => {
+    if (
+      realtimeRefreshToken === 0 ||
+      !user ||
+      !project ||
+      projectStatus !== "ready" ||
+      remoteLoadStatus !== "ready"
+    ) {
+      return;
+    }
+
+    const currentSnapshot = serializeRemotePayload(daysRef.current);
+    const hasUnsavedLocalChanges =
+      currentSnapshot !== lastRemoteSnapshotRef.current;
+
+    if (
+      remoteSaveStatus === "saving" ||
+      hasUnsavedLocalChanges ||
+      realtimeFetchInFlightRef.current
+    ) {
+      pendingRealtimeRefreshRef.current = true;
+      return;
+    }
+
+    pendingRealtimeRefreshRef.current = false;
+    realtimeFetchInFlightRef.current = true;
+
+    const supabase = createClient();
+    const projectId = project.id;
+    let cancelled = false;
+
+    async function refreshFromRealtime() {
+      try {
+        const remoteDays = await getProjectRundown(supabase, projectId);
+
+        if (cancelled) {
+          return;
+        }
+
+        const remoteSnapshot = serializeRemotePayload(remoteDays);
+        const latestLocalSnapshot = serializeRemotePayload(daysRef.current);
+
+        lastRemoteSnapshotRef.current = remoteSnapshot;
+
+        if (remoteSnapshot !== latestLocalSnapshot) {
+          const currentActiveId = activeDayIdRef.current;
+          const activeStillExists = remoteDays.some(
+            (day) => day.id === currentActiveId,
+          );
+
+          setDays(remoteDays);
+
+          if (remoteDays.length > 0) {
+            setActiveDayId(
+              activeStillExists ? currentActiveId : remoteDays[0].id,
+            );
+          }
+        }
+
+        setRemoteSaveStatus("saved");
+        setRealtimeStatus("connected");
+      } catch (error) {
+        console.error("Gagal menerapkan perubahan realtime:", error);
+
+        if (!cancelled) {
+          setRealtimeStatus("error");
+        }
+      } finally {
+        realtimeFetchInFlightRef.current = false;
+      }
+    }
+
+    void refreshFromRealtime();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    project?.id,
+    projectStatus,
+    realtimeRefreshToken,
+    remoteLoadStatus,
+    remoteSaveStatus,
+    user?.id,
+  ]);
 
   /* -------------------------------------------------------
    * OPEN ON TODAY'S DAY
@@ -1393,6 +1612,20 @@ export default function Home() {
     saving: "bg-amber-400/10 text-amber-300 ring-amber-400/20",
     saved: "bg-emerald-400/10 text-emerald-300 ring-emerald-400/20",
     error: "bg-red-400/10 text-red-300 ring-red-400/20",
+  };
+
+  const realtimeStatusLabel: Record<RealtimeStatus, string> = {
+    idle: user ? "Belum aktif" : "Belum login",
+    connecting: "Menghubungkan",
+    connected: "Terhubung",
+    error: "Terputus",
+  };
+
+  const realtimeStatusAppearance: Record<RealtimeStatus, string> = {
+    idle: "bg-white/10 text-slate-300 ring-white/10",
+    connecting: "bg-amber-400/10 text-amber-200 ring-amber-400/20",
+    connected: "bg-emerald-400/10 text-emerald-200 ring-emerald-400/20",
+    error: "bg-red-400/10 text-red-200 ring-red-400/20",
   };
 
   const pageMessage = syncMessage || authMessage;
@@ -1582,6 +1815,8 @@ export default function Home() {
       setProjectStatus("idle");
       setRemoteLoadStatus("idle");
       setRemoteSaveStatus("loading");
+      setRealtimeStatus("idle");
+      pendingRealtimeRefreshRef.current = false;
       setAuthStatus("idle");
     } catch (error) {
       console.error("Logout gagal:", error);
@@ -1777,6 +2012,27 @@ export default function Home() {
                           : projectStatus === "ready"
                             ? roleLabel
                             : "Akun terhubung"}
+                    </span>
+                  )}
+
+                  {user && projectStatus === "ready" && (
+                    <span
+                      className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ring-1 ${realtimeStatusAppearance[realtimeStatus]}`}
+                    >
+                      {realtimeStatus === "connecting" ? (
+                        <RefreshCw size={12} className="animate-spin" />
+                      ) : (
+                        <span
+                          className={`size-1.5 rounded-full ${
+                            realtimeStatus === "connected"
+                              ? "bg-emerald-300"
+                              : realtimeStatus === "error"
+                                ? "bg-red-300"
+                                : "bg-slate-400"
+                          }`}
+                        />
+                      )}
+                      Realtime {realtimeStatusLabel[realtimeStatus]}
                     </span>
                   )}
                 </div>
@@ -2388,6 +2644,12 @@ export default function Home() {
               />
 
               <StatusRow
+                label="Realtime"
+                value={realtimeStatusLabel[realtimeStatus]}
+                completed={realtimeStatus === "connected"}
+              />
+
+              <StatusRow
                 label="Google Calendar"
                 value={
                   !user
@@ -2419,8 +2681,8 @@ export default function Home() {
               />
 
               <div className="mt-4 rounded-xl bg-emerald-50 p-3 text-xs leading-5 text-emerald-800">
-                Saat login, hari dan kegiatan tersimpan di Supabase. Cadangan lokal
-                tetap dibuat agar perubahan lebih aman.
+                Saat login, hari dan kegiatan tersimpan di Supabase. Perubahan dari
+                perangkat lain muncul otomatis saat Realtime terhubung.
               </div>
             </div>
 
