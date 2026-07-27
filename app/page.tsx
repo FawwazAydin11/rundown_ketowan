@@ -12,15 +12,13 @@ import {
   LogOut,
   MoreHorizontal,
   Plus,
+  RefreshCw,
   Sparkles,
   Trash2,
   UserRound,
   Users,
 } from "lucide-react";
-import type {
-  SupabaseClient,
-  User,
-} from "@supabase/supabase-js";
+import type { SupabaseClient, User } from "@supabase/supabase-js";
 import {
   type ReactNode,
   useEffect,
@@ -40,6 +38,11 @@ type CalendarAudience =
   | "Hanya PIC"
   | "Tidak disinkronkan";
 
+type CalendarScope =
+  | "all_participants"
+  | "pic_only"
+  | "not_synced";
+
 type RundownItem = {
   id: string;
   endTime: string;
@@ -57,28 +60,20 @@ type RundownDay = {
   items: RundownItem[];
 };
 
-type SaveStatus =
-  | "loading"
-  | "saving"
-  | "saved"
-  | "error";
+type SaveStatus = "loading" | "saving" | "saved" | "error";
 
-type AuthStatus =
-  | "loading"
-  | "idle"
-  | "redirecting"
-  | "error";
+type AuthStatus = "loading" | "idle" | "redirecting" | "error";
 
-type ProjectStatus =
+type ProjectStatus = "idle" | "loading" | "ready" | "error";
+
+type RemoteLoadStatus =
   | "idle"
   | "loading"
+  | "migrating"
   | "ready"
   | "error";
 
-type ProjectRole =
-  | "owner"
-  | "editor"
-  | "participant";
+type ProjectRole = "owner" | "editor" | "participant";
 
 type RundownProject = {
   id: string;
@@ -90,21 +85,41 @@ type RundownProject = {
   role: ProjectRole;
 };
 
-type ProjectRow = Omit<
-  RundownProject,
-  "role"
->;
+type ProjectRow = Omit<RundownProject, "role">;
 
 type StoredRundownData = {
   days: RundownDay[];
   activeDayId: string;
 };
 
+type RemoteItemPayload = {
+  id: string;
+  endTime: string;
+  activity: string;
+  note: string;
+  personInCharge: string;
+  calendarScope: CalendarScope;
+};
+
+type RemoteDayPayload = {
+  id: string;
+  title: string;
+  date: string;
+  firstStartTime: string;
+  items: RemoteItemPayload[];
+};
+
 /* =========================================================
  * CONSTANTS
  * ======================================================= */
 
-const STORAGE_KEY = "rundownku-data-v3";
+const GUEST_STORAGE_KEY = "rundownku-guest-v4";
+
+const LEGACY_STORAGE_KEYS = [
+  "rundownku-data-v3",
+  "rundownku-data-v2",
+  "rundownku-data-v1",
+];
 
 const PROJECT_COLUMNS =
   "id,name,description,owner_id,created_at,updated_at";
@@ -117,13 +132,13 @@ const INPUT_REQUIRED =
 
 const initialDays: RundownDay[] = [
   {
-    id: "day-27-july",
+    id: "eb974245-0d55-4d37-b9ea-3d8c1d1ba311",
     title: "27 Juli",
     date: "2026-07-27",
     firstStartTime: "00:00",
     items: [
       {
-        id: "free-time-1",
+        id: "f1a67009-327c-4110-af5b-a7bbef18aa01",
         endTime: "10:00",
         activity: "Free Time",
         note: "",
@@ -131,7 +146,7 @@ const initialDays: RundownDay[] = [
         audience: "Semua peserta",
       },
       {
-        id: "ambil-tai-sapi",
+        id: "eb2ca138-071a-47fc-871a-d5428c6f48ec",
         endTime: "12:00",
         activity: "Ambil tai sapi",
         note: "",
@@ -139,7 +154,7 @@ const initialDays: RundownDay[] = [
         audience: "Hanya PIC",
       },
       {
-        id: "free-time-2",
+        id: "3bbaedbf-c231-42aa-8c4a-49527ea70854",
         endTime: "14:00",
         activity: "Free Time",
         note: "",
@@ -147,16 +162,15 @@ const initialDays: RundownDay[] = [
         audience: "Semua peserta",
       },
       {
-        id: "membuat-mie",
+        id: "7d37a813-b90e-4dcb-bae3-a4272b551d6e",
         endTime: "17:00",
-        activity:
-          "Melanjutkan proses pembuatan mie",
+        activity: "Melanjutkan proses pembuatan mie",
         note: "",
         personInCharge: "",
         audience: "Hanya PIC",
       },
       {
-        id: "free-time-3",
+        id: "fb18d867-1834-48aa-baf3-179d783527ba",
         endTime: "17:30",
         activity: "Free Time",
         note: "",
@@ -164,10 +178,9 @@ const initialDays: RundownDay[] = [
         audience: "Semua peserta",
       },
       {
-        id: "pengajian",
+        id: "549bcf8b-a13b-457d-bde5-39928d89935a",
         endTime: "19:00",
-        activity:
-          "pengajian anjay bersama ebok",
+        activity: "pengajian anjay bersama ebok",
         note: "",
         personInCharge: "",
         audience: "Semua peserta",
@@ -195,8 +208,12 @@ const monthNames = [
  * UTILITY FUNCTIONS
  * ======================================================= */
 
-function createId(prefix: string) {
-  return `${prefix}-${crypto.randomUUID()}`;
+function createId() {
+  return crypto.randomUUID();
+}
+
+function getProjectStorageKey(projectId: string) {
+  return `rundownku-project-${projectId}-v4`;
 }
 
 function timeToMinutes(time: string) {
@@ -204,8 +221,7 @@ function timeToMinutes(time: string) {
     return null;
   }
 
-  const [hours, minutes] =
-    time.split(":").map(Number);
+  const [hours, minutes] = time.split(":").map(Number);
 
   if (
     Number.isNaN(hours) ||
@@ -221,10 +237,7 @@ function timeToMinutes(time: string) {
   return hours * 60 + minutes;
 }
 
-function calculateDurationMinutes(
-  startTime: string,
-  endTime: string,
-) {
+function calculateDurationMinutes(startTime: string, endTime: string) {
   const start = timeToMinutes(startTime);
   const rawEnd = timeToMinutes(endTime);
 
@@ -241,9 +254,7 @@ function calculateDurationMinutes(
   return end - start;
 }
 
-function formatDuration(
-  minutes: number | null,
-) {
+function formatDuration(minutes: number | null) {
   if (minutes === null) {
     return "Belum lengkap";
   }
@@ -267,16 +278,13 @@ function formatDate(date: string) {
     return "Tanggal belum diatur";
   }
 
-  const [year, month, day] =
-    date.split("-").map(Number);
+  const [year, month, day] = date.split("-").map(Number);
 
   if (!year || !month || !day) {
     return date;
   }
 
-  return `${day} ${
-    monthNames[month - 1]
-  } ${year}`;
+  return `${day} ${monthNames[month - 1]} ${year}`;
 }
 
 function getNextDate(date: string) {
@@ -284,56 +292,77 @@ function getNextDate(date: string) {
     return "";
   }
 
-  const [year, month, day] =
-    date.split("-").map(Number);
-
-  const result = new Date(
-    Date.UTC(year, month - 1, day + 1),
-  );
+  const [year, month, day] = date.split("-").map(Number);
+  const result = new Date(Date.UTC(year, month - 1, day + 1));
 
   return [
     result.getUTCFullYear(),
-    String(result.getUTCMonth() + 1).padStart(
-      2,
-      "0",
-    ),
-    String(result.getUTCDate()).padStart(
-      2,
-      "0",
-    ),
+    String(result.getUTCMonth() + 1).padStart(2, "0"),
+    String(result.getUTCDate()).padStart(2, "0"),
   ].join("-");
 }
 
-function getAudienceAppearance(
-  audience: CalendarAudience,
-) {
+function getAudienceAppearance(audience: CalendarAudience) {
   switch (audience) {
     case "Semua peserta":
       return "bg-blue-50 text-blue-700 ring-blue-100";
-
     case "Hanya PIC":
       return "bg-violet-50 text-violet-700 ring-violet-100";
-
     default:
       return "bg-slate-100 text-slate-600 ring-slate-200";
   }
 }
 
-function isStoredRundownData(
-  value: unknown,
-): value is StoredRundownData {
+function audienceToScope(audience: CalendarAudience): CalendarScope {
+  switch (audience) {
+    case "Semua peserta":
+      return "all_participants";
+    case "Tidak disinkronkan":
+      return "not_synced";
+    default:
+      return "pic_only";
+  }
+}
+
+function scopeToAudience(scope: unknown): CalendarAudience {
+  switch (scope) {
+    case "all_participants":
+      return "Semua peserta";
+    case "not_synced":
+      return "Tidak disinkronkan";
+    default:
+      return "Hanya PIC";
+  }
+}
+
+function isStoredRundownData(value: unknown): value is StoredRundownData {
   if (!value || typeof value !== "object") {
     return false;
   }
 
-  const data =
-    value as Partial<StoredRundownData>;
+  const data = value as Partial<StoredRundownData>;
 
   return (
     Array.isArray(data.days) &&
     data.days.length > 0 &&
     typeof data.activeDayId === "string"
   );
+}
+
+function readStoredRundown(key: string): StoredRundownData | null {
+  try {
+    const storedValue = window.localStorage.getItem(key);
+
+    if (!storedValue) {
+      return null;
+    }
+
+    const parsedValue: unknown = JSON.parse(storedValue);
+    return isStoredRundownData(parsedValue) ? parsedValue : null;
+  } catch (error) {
+    console.error(`Gagal membaca penyimpanan lokal ${key}:`, error);
+    return null;
+  }
 }
 
 function getUserName(user: User | null) {
@@ -361,22 +390,107 @@ function getUserAvatar(user: User | null) {
   );
 }
 
-function getRoleLabel(
-  role: ProjectRole | undefined,
-) {
+function getRoleLabel(role: ProjectRole | undefined) {
   switch (role) {
     case "owner":
       return "Pemilik";
-
     case "editor":
       return "Editor";
-
     case "participant":
       return "Peserta";
-
     default:
       return "Belum ditentukan";
   }
+}
+
+function toRemotePayload(days: RundownDay[]): RemoteDayPayload[] {
+  return days.map((day) => ({
+    id: day.id,
+    title: day.title,
+    date: day.date,
+    firstStartTime: day.firstStartTime,
+    items: day.items.map((item) => ({
+      id: item.id,
+      endTime: item.endTime,
+      activity: item.activity,
+      note: item.note,
+      personInCharge: item.personInCharge,
+      calendarScope: audienceToScope(item.audience),
+    })),
+  }));
+}
+
+function serializeRemotePayload(days: RundownDay[]) {
+  return JSON.stringify(toRemotePayload(days));
+}
+
+function normalizeRemoteRundown(value: unknown): RundownDay[] {
+  let source = value;
+
+  if (typeof source === "string") {
+    try {
+      source = JSON.parse(source);
+    } catch {
+      return [];
+    }
+  }
+
+  if (!Array.isArray(source)) {
+    return [];
+  }
+
+  return source
+    .map((rawDay, dayIndex): RundownDay | null => {
+      if (!rawDay || typeof rawDay !== "object") {
+        return null;
+      }
+
+      const day = rawDay as Record<string, unknown>;
+      const rawItems = Array.isArray(day.items) ? day.items : [];
+
+      const items = rawItems
+        .map((rawItem): RundownItem | null => {
+          if (!rawItem || typeof rawItem !== "object") {
+            return null;
+          }
+
+          const item = rawItem as Record<string, unknown>;
+
+          return {
+            id:
+              typeof item.id === "string" && item.id
+                ? item.id
+                : createId(),
+            endTime:
+              typeof item.endTime === "string" ? item.endTime : "",
+            activity:
+              typeof item.activity === "string" ? item.activity : "",
+            note: typeof item.note === "string" ? item.note : "",
+            personInCharge:
+              typeof item.personInCharge === "string"
+                ? item.personInCharge
+                : "",
+            audience: scopeToAudience(item.calendarScope),
+          };
+        })
+        .filter((item): item is RundownItem => item !== null);
+
+      return {
+        id:
+          typeof day.id === "string" && day.id ? day.id : createId(),
+        title:
+          typeof day.title === "string" && day.title.trim()
+            ? day.title
+            : `Hari ${dayIndex + 1}`,
+        date: typeof day.date === "string" ? day.date : "",
+        firstStartTime:
+          typeof day.firstStartTime === "string" && day.firstStartTime
+            ? day.firstStartTime
+            : "08:00",
+        items,
+      };
+    })
+    .filter((day): day is RundownDay => day !== null);
 }
 
 /* =========================================================
@@ -401,47 +515,29 @@ async function getProjectRole(
     .maybeSingle();
 
   if (error) {
-    throw new Error(
-      `Gagal membaca role: ${error.message}`,
-    );
+    throw new Error(`Gagal membaca role: ${error.message}`);
   }
 
-  return (
-    (data?.role as ProjectRole | undefined) ??
-    "participant"
-  );
+  return (data?.role as ProjectRole | undefined) ?? "participant";
 }
 
 async function getOrCreateDefaultProject(
   supabase: SupabaseClient,
   user: User,
 ): Promise<RundownProject> {
-  /*
-   * Pertama, cari proyek yang sudah dapat
-   * diakses pengguna melalui policy SELECT.
-   */
-  const {
-    data: existingProject,
-    error: selectError,
-  } = await supabase
+  const { data: existingProject, error: selectError } = await supabase
     .from("projects")
     .select(PROJECT_COLUMNS)
-    .order("created_at", {
-      ascending: true,
-    })
+    .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
   if (selectError) {
-    throw new Error(
-      `Gagal membaca proyek: ${selectError.message}`,
-    );
+    throw new Error(`Gagal membaca proyek: ${selectError.message}`);
   }
 
   if (existingProject) {
-    const project =
-      existingProject as ProjectRow;
-
+    const project = existingProject as ProjectRow;
     const role = await getProjectRole(
       supabase,
       project.id,
@@ -449,29 +545,17 @@ async function getOrCreateDefaultProject(
       project.owner_id,
     );
 
-    return {
-      ...project,
-      role,
-    };
+    return { ...project, role };
   }
 
-  /*
-   * Kalau belum ada proyek, panggil fungsi
-   * database yang membuat proyek dan owner
-   * dalam satu transaksi.
-   */
-  const {
-    data: createdProject,
-    error: createError,
-  } = await supabase
+  const { data: createdProject, error: createError } = await supabase
     .rpc("get_or_create_default_project")
     .single();
 
   if (createError || !createdProject) {
     throw new Error(
       `Gagal membuat proyek: ${
-        createError?.message ??
-        "Data proyek tidak dikembalikan."
+        createError?.message ?? "Data proyek tidak dikembalikan."
       }`,
     );
   }
@@ -482,45 +566,81 @@ async function getOrCreateDefaultProject(
   };
 }
 
+async function getProjectRundown(
+  supabase: SupabaseClient,
+  projectId: string,
+) {
+  const { data, error } = await supabase.rpc("get_project_rundown", {
+    p_project_id: projectId,
+  });
+
+  if (error) {
+    throw new Error(`Gagal membaca rundown online: ${error.message}`);
+  }
+
+  return normalizeRemoteRundown(data);
+}
+
+async function saveProjectRundown(
+  supabase: SupabaseClient,
+  projectId: string,
+  days: RundownDay[],
+) {
+  const { error } = await supabase.rpc("save_project_rundown", {
+    p_project_id: projectId,
+    p_days: toRemotePayload(days),
+  });
+
+  if (error) {
+    throw new Error(`Gagal menyimpan rundown online: ${error.message}`);
+  }
+}
+
 /* =========================================================
  * MAIN COMPONENT
  * ======================================================= */
 
 export default function Home() {
-  const [days, setDays] =
-    useState<RundownDay[]>(initialDays);
-
-  const [activeDayId, setActiveDayId] =
-    useState(initialDays[0].id);
-
-  const [storageReady, setStorageReady] =
-    useState(false);
-
-  const [saveStatus, setSaveStatus] =
+  const [days, setDays] = useState<RundownDay[]>(initialDays);
+  const [activeDayId, setActiveDayId] = useState(initialDays[0].id);
+  const [storageReady, setStorageReady] = useState(false);
+  const [localSaveStatus, setLocalSaveStatus] =
     useState<SaveStatus>("loading");
 
-  const [user, setUser] =
-    useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
+  const [authMessage, setAuthMessage] = useState("");
 
-  const [authStatus, setAuthStatus] =
-    useState<AuthStatus>("loading");
-
-  const [authMessage, setAuthMessage] =
-    useState("");
-
-  const [project, setProject] =
-    useState<RundownProject | null>(null);
-
+  const [project, setProject] = useState<RundownProject | null>(null);
   const [projectStatus, setProjectStatus] =
     useState<ProjectStatus>("idle");
 
-  const saveTimerRef =
-    useRef<ReturnType<
-      typeof setTimeout
-    > | null>(null);
+  const [remoteLoadStatus, setRemoteLoadStatus] =
+    useState<RemoteLoadStatus>("idle");
+  const [remoteSaveStatus, setRemoteSaveStatus] =
+    useState<SaveStatus>("loading");
+  const [syncMessage, setSyncMessage] = useState("");
+  const [syncAttempt, setSyncAttempt] = useState(0);
 
-  const projectLoadRef =
-    useRef<string | null>(null);
+  const localSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const remoteSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const projectLoadRef = useRef<string | null>(null);
+  const rundownLoadRef = useRef<string | null>(null);
+  const lastRemoteSnapshotRef = useRef("");
+  const daysRef = useRef(days);
+  const activeDayIdRef = useRef(activeDayId);
+
+  useEffect(() => {
+    daysRef.current = days;
+  }, [days]);
+
+  useEffect(() => {
+    activeDayIdRef.current = activeDayId;
+  }, [activeDayId]);
 
   /* -------------------------------------------------------
    * LOAD LOCAL DATA
@@ -528,99 +648,80 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      const storedValue =
-        window.localStorage.getItem(
-          STORAGE_KEY,
-        );
+      const keysToTry = [GUEST_STORAGE_KEY, ...LEGACY_STORAGE_KEYS];
+      let storedData: StoredRundownData | null = null;
 
-      if (storedValue) {
-        const parsedValue: unknown =
-          JSON.parse(storedValue);
+      for (const key of keysToTry) {
+        storedData = readStoredRundown(key);
 
-        if (
-          isStoredRundownData(parsedValue)
-        ) {
-          setDays(parsedValue.days);
-
-          const savedDayStillExists =
-            parsedValue.days.some(
-              (day) =>
-                day.id ===
-                parsedValue.activeDayId,
-            );
-
-          setActiveDayId(
-            savedDayStillExists
-              ? parsedValue.activeDayId
-              : parsedValue.days[0].id,
-          );
+        if (storedData) {
+          break;
         }
       }
 
-      setSaveStatus("saved");
-    } catch (error) {
-      console.error(
-        "Gagal membaca rundown lokal:",
-        error,
-      );
+      if (storedData) {
+        setDays(storedData.days);
 
-      setSaveStatus("error");
+        const activeDayStillExists = storedData.days.some(
+          (day) => day.id === storedData.activeDayId,
+        );
+
+        setActiveDayId(
+          activeDayStillExists
+            ? storedData.activeDayId
+            : storedData.days[0].id,
+        );
+      }
+
+      setLocalSaveStatus("saved");
+    } catch (error) {
+      console.error("Gagal membaca rundown lokal:", error);
+      setLocalSaveStatus("error");
     } finally {
       setStorageReady(true);
     }
   }, []);
 
   /* -------------------------------------------------------
-   * LOCAL AUTOSAVE
+   * LOCAL BACKUP AUTOSAVE
    * ----------------------------------------------------- */
 
   useEffect(() => {
-    if (!storageReady) {
+    if (!storageReady || days.length === 0) {
       return;
     }
 
-    setSaveStatus("saving");
+    setLocalSaveStatus("saving");
 
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current);
+    if (localSaveTimerRef.current) {
+      clearTimeout(localSaveTimerRef.current);
     }
 
-    saveTimerRef.current = setTimeout(() => {
+    localSaveTimerRef.current = setTimeout(() => {
       try {
-        const dataToSave: StoredRundownData =
-          {
-            days,
-            activeDayId,
-          };
+        const storageKey = project?.id
+          ? getProjectStorageKey(project.id)
+          : GUEST_STORAGE_KEY;
 
-        window.localStorage.setItem(
-          STORAGE_KEY,
-          JSON.stringify(dataToSave),
-        );
+        const dataToSave: StoredRundownData = {
+          days,
+          activeDayId,
+        };
 
-        setSaveStatus("saved");
+        window.localStorage.setItem(storageKey, JSON.stringify(dataToSave));
+        setLocalSaveStatus("saved");
       } catch (error) {
-        console.error(
-          "Gagal menyimpan rundown:",
-          error,
-        );
-
-        setSaveStatus("error");
+        console.error("Gagal menyimpan cadangan lokal:", error);
+        setLocalSaveStatus("error");
       }
-    }, 500);
+    }, 400);
 
     return () => {
-      if (saveTimerRef.current) {
-        clearTimeout(
-          saveTimerRef.current,
-        );
+      if (localSaveTimerRef.current) {
+        clearTimeout(localSaveTimerRef.current);
       }
     };
-  }, [
-    days,
-    activeDayId,
-    storageReady,
-  ]);
+  }, [days, activeDayId, project?.id, storageReady]);
 
   /* -------------------------------------------------------
    * AUTH SESSION
@@ -635,8 +736,7 @@ export default function Home() {
         const {
           data: { session },
           error,
-        } =
-          await supabase.auth.getSession();
+        } = await supabase.auth.getSession();
 
         if (error) {
           throw error;
@@ -649,19 +749,14 @@ export default function Home() {
         setUser(session?.user ?? null);
         setAuthStatus("idle");
       } catch (error) {
-        console.error(
-          "Gagal membaca sesi:",
-          error,
-        );
+        console.error("Gagal membaca sesi:", error);
 
         if (!mounted) {
           return;
         }
 
         setAuthStatus("error");
-        setAuthMessage(
-          "Sesi login gagal dibaca. Coba muat ulang halaman.",
-        );
+        setAuthMessage("Sesi login gagal dibaca. Coba muat ulang halaman.");
       }
     }
 
@@ -669,17 +764,14 @@ export default function Home() {
 
     const {
       data: { subscription },
-    } =
-      supabase.auth.onAuthStateChange(
-        (_event, session) => {
-          if (!mounted) {
-            return;
-          }
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) {
+        return;
+      }
 
-          setUser(session?.user ?? null);
-          setAuthStatus("idle");
-        },
-      );
+      setUser(session?.user ?? null);
+      setAuthStatus("idle");
+    });
 
     return () => {
       mounted = false;
@@ -691,82 +783,281 @@ export default function Home() {
    * LOAD OR CREATE PROJECT
    * ----------------------------------------------------- */
 
-useEffect(() => {
-  if (!user) {
-    projectLoadRef.current = null;
-    setProject(null);
-    setProjectStatus("idle");
-    return;
-  }
+  useEffect(() => {
+    if (!user) {
+      projectLoadRef.current = null;
+      rundownLoadRef.current = null;
+      lastRemoteSnapshotRef.current = "";
+      setProject(null);
+      setProjectStatus("idle");
+      setRemoteLoadStatus("idle");
+      setRemoteSaveStatus("loading");
+      return;
+    }
 
-  // Simpan user yang sudah dipastikan tidak null
-  // ke variabel baru agar TypeScript mengenalinya sebagai User.
-  const currentUser = user;
+    const currentUser = user;
 
-  if (
-    projectLoadRef.current ===
-    currentUser.id
-  ) {
-    return;
-  }
+    if (projectLoadRef.current === currentUser.id) {
+      return;
+    }
 
-  projectLoadRef.current =
-    currentUser.id;
+    projectLoadRef.current = currentUser.id;
 
-  const supabase = createClient();
-  let cancelled = false;
+    const supabase = createClient();
+    let cancelled = false;
 
-  async function loadProject() {
-    try {
-      setProjectStatus("loading");
+    async function loadProject() {
+      try {
+        setProjectStatus("loading");
 
-      const result =
-        await getOrCreateDefaultProject(
+        const result = await getOrCreateDefaultProject(
           supabase,
           currentUser,
         );
 
-      if (cancelled) {
-        return;
+        if (cancelled) {
+          return;
+        }
+
+        setProject(result);
+        setProjectStatus("ready");
+      } catch (error) {
+        console.error("Gagal memuat proyek:", error);
+
+        if (cancelled) {
+          return;
+        }
+
+        projectLoadRef.current = null;
+        setProjectStatus("error");
+        setAuthMessage(
+          error instanceof Error ? error.message : "Proyek gagal dimuat.",
+        );
       }
-
-      setProject(result);
-      setProjectStatus("ready");
-    } catch (error) {
-      console.error(
-        "Gagal memuat proyek:",
-        error,
-      );
-
-      if (cancelled) {
-        return;
-      }
-
-      projectLoadRef.current = null;
-      setProjectStatus("error");
-
-      setAuthMessage(
-        error instanceof Error
-          ? error.message
-          : "Proyek gagal dimuat.",
-      );
     }
-  }
 
-  void loadProject();
+    void loadProject();
 
-  return () => {
-    cancelled = true;
-  };
-}, [user]);
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  /* -------------------------------------------------------
+   * LOAD ONLINE RUNDOWN OR MIGRATE LOCAL DATA
+   * ----------------------------------------------------- */
+
+  useEffect(() => {
+    if (
+      !storageReady ||
+      !user ||
+      !project ||
+      projectStatus !== "ready"
+    ) {
+      return;
+    }
+
+    const loadKey = `${user.id}:${project.id}:${syncAttempt}`;
+
+    if (rundownLoadRef.current === loadKey) {
+      return;
+    }
+
+    rundownLoadRef.current = loadKey;
+
+    const currentProject = project;
+    const supabase = createClient();
+    let cancelled = false;
+
+    async function loadRundown() {
+      try {
+        setSyncMessage("");
+        setRemoteLoadStatus("loading");
+        setRemoteSaveStatus("loading");
+
+        const remoteDays = await getProjectRundown(
+          supabase,
+          currentProject.id,
+        );
+
+        if (cancelled) {
+          return;
+        }
+
+        if (remoteDays.length > 0) {
+          const currentActiveId = activeDayIdRef.current;
+          const activeStillExists = remoteDays.some(
+            (day) => day.id === currentActiveId,
+          );
+
+          lastRemoteSnapshotRef.current = serializeRemotePayload(remoteDays);
+          setDays(remoteDays);
+          setActiveDayId(
+            activeStillExists ? currentActiveId : remoteDays[0].id,
+          );
+          setRemoteLoadStatus("ready");
+          setRemoteSaveStatus("saved");
+          return;
+        }
+
+        if (currentProject.role === "participant") {
+          lastRemoteSnapshotRef.current = serializeRemotePayload(
+            daysRef.current,
+          );
+          setRemoteLoadStatus("ready");
+          setRemoteSaveStatus("saved");
+          return;
+        }
+
+        setRemoteLoadStatus("migrating");
+        setRemoteSaveStatus("saving");
+
+        const projectBackup = readStoredRundown(
+          getProjectStorageKey(currentProject.id),
+        );
+
+        const migrationDays =
+          projectBackup?.days.length && projectBackup.days.length > 0
+            ? projectBackup.days
+            : daysRef.current;
+
+        await saveProjectRundown(
+          supabase,
+          currentProject.id,
+          migrationDays,
+        );
+
+        const refreshedDays = await getProjectRundown(
+          supabase,
+          currentProject.id,
+        );
+
+        if (cancelled) {
+          return;
+        }
+
+        const finalDays =
+          refreshedDays.length > 0 ? refreshedDays : migrationDays;
+
+        const preferredActiveId =
+          projectBackup?.activeDayId ?? activeDayIdRef.current;
+        const activeStillExists = finalDays.some(
+          (day) => day.id === preferredActiveId,
+        );
+
+        lastRemoteSnapshotRef.current = serializeRemotePayload(finalDays);
+        setDays(finalDays);
+        setActiveDayId(
+          activeStillExists ? preferredActiveId : finalDays[0].id,
+        );
+        setRemoteLoadStatus("ready");
+        setRemoteSaveStatus("saved");
+      } catch (error) {
+        console.error("Gagal memuat atau memigrasikan rundown:", error);
+
+        if (cancelled) {
+          return;
+        }
+
+        rundownLoadRef.current = null;
+        setRemoteLoadStatus("error");
+        setRemoteSaveStatus("error");
+        setSyncMessage(
+          error instanceof Error
+            ? error.message
+            : "Rundown online gagal dimuat.",
+        );
+      }
+    }
+
+    void loadRundown();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    project,
+    projectStatus,
+    storageReady,
+    syncAttempt,
+    user,
+  ]);
+
+  /* -------------------------------------------------------
+   * ONLINE AUTOSAVE
+   * ----------------------------------------------------- */
+
+  useEffect(() => {
+    if (
+      !user ||
+      !project ||
+      projectStatus !== "ready" ||
+      remoteLoadStatus !== "ready" ||
+      project.role === "participant"
+    ) {
+      return;
+    }
+
+    const snapshot = serializeRemotePayload(days);
+
+    if (snapshot === lastRemoteSnapshotRef.current) {
+      return;
+    }
+
+    setRemoteSaveStatus("saving");
+    setSyncMessage("");
+
+    if (remoteSaveTimerRef.current) {
+      clearTimeout(remoteSaveTimerRef.current);
+    }
+
+    const supabase = createClient();
+    const projectId = project.id;
+    let cancelled = false;
+
+    remoteSaveTimerRef.current = setTimeout(() => {
+      void (async () => {
+        try {
+          await saveProjectRundown(supabase, projectId, days);
+
+          if (cancelled) {
+            return;
+          }
+
+          lastRemoteSnapshotRef.current = snapshot;
+          setRemoteSaveStatus("saved");
+        } catch (error) {
+          console.error("Autosave online gagal:", error);
+
+          if (cancelled) {
+            return;
+          }
+
+          setRemoteSaveStatus("error");
+          setSyncMessage(
+            error instanceof Error
+              ? error.message
+              : "Perubahan gagal disimpan secara online.",
+          );
+        }
+      })();
+    }, 900);
+
+    return () => {
+      cancelled = true;
+
+      if (remoteSaveTimerRef.current) {
+        clearTimeout(remoteSaveTimerRef.current);
+      }
+    };
+  }, [days, project, projectStatus, remoteLoadStatus, user]);
+
   /* -------------------------------------------------------
    * DERIVED DATA
    * ----------------------------------------------------- */
 
   const activeDay =
-    days.find(
-      (day) => day.id === activeDayId,
-    ) ?? days[0];
+    days.find((day) => day.id === activeDayId) ?? days[0];
 
   const daySummary = useMemo(() => {
     if (!activeDay) {
@@ -780,37 +1071,25 @@ useEffect(() => {
     let totalMinutes = 0;
     let completedItems = 0;
 
-    activeDay.items.forEach(
-      (item, index) => {
-        const startTime =
-          index === 0
-            ? activeDay.firstStartTime
-            : activeDay.items[
-                index - 1
-              ].endTime;
+    activeDay.items.forEach((item, index) => {
+      const startTime =
+        index === 0
+          ? activeDay.firstStartTime
+          : activeDay.items[index - 1].endTime;
 
-        const duration =
-          calculateDurationMinutes(
-            startTime,
-            item.endTime,
-          );
+      const duration = calculateDurationMinutes(startTime, item.endTime);
 
-        if (duration !== null) {
-          totalMinutes += duration;
-        }
+      if (duration !== null) {
+        totalMinutes += duration;
+      }
 
-        if (
-          item.activity.trim() &&
-          item.endTime
-        ) {
-          completedItems += 1;
-        }
-      },
-    );
+      if (item.activity.trim() && item.endTime) {
+        completedItems += 1;
+      }
+    });
 
     return {
-      totalActivities:
-        activeDay.items.length,
+      totalActivities: activeDay.items.length,
       totalMinutes,
       completedItems,
     };
@@ -818,54 +1097,71 @@ useEffect(() => {
 
   const userName = getUserName(user);
   const userAvatar = getUserAvatar(user);
-  const roleLabel = getRoleLabel(
-    project?.role,
-  );
+  const roleLabel = getRoleLabel(project?.role);
 
-  /*
-   * Mode tamu masih boleh mengedit data lokal.
-   * Peserta login hanya boleh melihat.
-   */
   const canEdit =
     !user ||
-    projectStatus !== "ready" ||
-    project?.role !== "participant";
+    (projectStatus === "ready" &&
+      remoteLoadStatus === "ready" &&
+      project?.role !== "participant");
+
+  const effectiveSaveStatus: SaveStatus = user
+    ? remoteLoadStatus === "loading"
+      ? "loading"
+      : remoteLoadStatus === "migrating"
+        ? "saving"
+        : remoteLoadStatus === "error"
+          ? "error"
+          : remoteSaveStatus
+    : localSaveStatus;
+
+  const saveStatusText: Record<SaveStatus, string> = user
+    ? {
+        loading: "Memuat online...",
+        saving:
+          remoteLoadStatus === "migrating"
+            ? "Memindahkan data..."
+            : "Menyimpan online...",
+        saved: "Tersimpan online",
+        error: "Sinkronisasi gagal",
+      }
+    : {
+        loading: "Memuat data...",
+        saving: "Menyimpan lokal...",
+        saved: "Tersimpan lokal",
+        error: "Gagal menyimpan",
+      };
+
+  const saveStatusAppearance: Record<SaveStatus, string> = {
+    loading: "bg-amber-400/10 text-amber-300 ring-amber-400/20",
+    saving: "bg-amber-400/10 text-amber-300 ring-amber-400/20",
+    saved: "bg-emerald-400/10 text-emerald-300 ring-emerald-400/20",
+    error: "bg-red-400/10 text-red-300 ring-red-400/20",
+  };
+
+  const pageMessage = syncMessage || authMessage;
 
   /* -------------------------------------------------------
    * EDITOR FUNCTIONS
    * ----------------------------------------------------- */
 
-  function updateActiveDay(
-    updater: (
-      day: RundownDay,
-    ) => RundownDay,
-  ) {
+  function updateActiveDay(updater: (day: RundownDay) => RundownDay) {
     if (!canEdit) {
       return;
     }
 
     setDays((currentDays) =>
       currentDays.map((day) =>
-        day.id === activeDayId
-          ? updater(day)
-          : day,
+        day.id === activeDayId ? updater(day) : day,
       ),
     );
   }
 
-  function patchItem(
-    itemId: string,
-    patch: Partial<RundownItem>,
-  ) {
+  function patchItem(itemId: string, patch: Partial<RundownItem>) {
     updateActiveDay((day) => ({
       ...day,
       items: day.items.map((item) =>
-        item.id === itemId
-          ? {
-              ...item,
-              ...patch,
-            }
-          : item,
+        item.id === itemId ? { ...item, ...patch } : item,
       ),
     }));
   }
@@ -876,7 +1172,7 @@ useEffect(() => {
       items: [
         ...day.items,
         {
-          id: createId("item"),
+          id: createId(),
           endTime: "",
           activity: "",
           note: "",
@@ -889,94 +1185,55 @@ useEffect(() => {
 
   function duplicateItem(itemId: string) {
     updateActiveDay((day) => {
-      const index =
-        day.items.findIndex(
-          (item) => item.id === itemId,
-        );
+      const index = day.items.findIndex((item) => item.id === itemId);
 
       if (index === -1) {
         return day;
       }
 
       const source = day.items[index];
-
       const copiedItem: RundownItem = {
         ...source,
-        id: createId("item"),
-        activity: source.activity
-          ? `${source.activity} (salinan)`
-          : "",
+        id: createId(),
+        activity: source.activity ? `${source.activity} (salinan)` : "",
       };
 
-      const updatedItems = [
-        ...day.items,
-      ];
+      const updatedItems = [...day.items];
+      updatedItems.splice(index + 1, 0, copiedItem);
 
-      updatedItems.splice(
-        index + 1,
-        0,
-        copiedItem,
-      );
-
-      return {
-        ...day,
-        items: updatedItems,
-      };
+      return { ...day, items: updatedItems };
     });
   }
 
   function deleteItem(itemId: string) {
     updateActiveDay((day) => ({
       ...day,
-      items: day.items.filter(
-        (item) => item.id !== itemId,
-      ),
+      items: day.items.filter((item) => item.id !== itemId),
     }));
   }
 
-  function moveItem(
-    itemId: string,
-    direction: "up" | "down",
-  ) {
+  function moveItem(itemId: string, direction: "up" | "down") {
     updateActiveDay((day) => {
-      const currentIndex =
-        day.items.findIndex(
-          (item) => item.id === itemId,
-        );
+      const currentIndex = day.items.findIndex((item) => item.id === itemId);
 
       if (currentIndex === -1) {
         return day;
       }
 
       const targetIndex =
-        direction === "up"
-          ? currentIndex - 1
-          : currentIndex + 1;
+        direction === "up" ? currentIndex - 1 : currentIndex + 1;
 
-      if (
-        targetIndex < 0 ||
-        targetIndex >=
-          day.items.length
-      ) {
+      if (targetIndex < 0 || targetIndex >= day.items.length) {
         return day;
       }
 
-      const updatedItems = [
-        ...day.items,
-      ];
-
-      [
-        updatedItems[currentIndex],
-        updatedItems[targetIndex],
-      ] = [
+      const updatedItems = [...day.items];
+      [updatedItems[currentIndex], updatedItems[targetIndex]] = [
         updatedItems[targetIndex],
         updatedItems[currentIndex],
       ];
 
-      return {
-        ...day,
-        items: updatedItems,
-      };
+      return { ...day, items: updatedItems };
     });
   }
 
@@ -985,24 +1242,16 @@ useEffect(() => {
       return;
     }
 
-    const previousDay =
-      days[days.length - 1];
-
+    const previousDay = days[days.length - 1];
     const newDay: RundownDay = {
-      id: createId("day"),
+      id: createId(),
       title: `Hari ${days.length + 1}`,
-      date: getNextDate(
-        previousDay?.date ?? "",
-      ),
+      date: getNextDate(previousDay?.date ?? ""),
       firstStartTime: "08:00",
       items: [],
     };
 
-    setDays((currentDays) => [
-      ...currentDays,
-      newDay,
-    ]);
-
+    setDays((currentDays) => [...currentDays, newDay]);
     setActiveDayId(newDay.id);
   }
 
@@ -1013,29 +1262,21 @@ useEffect(() => {
 
     const copiedDay: RundownDay = {
       ...activeDay,
-      id: createId("day"),
+      id: createId(),
       title: `${activeDay.title} salinan`,
-      date: getNextDate(
-        activeDay.date,
-      ),
-      items: activeDay.items.map(
-        (item) => ({
-          ...item,
-          id: createId("item"),
-        }),
-      ),
+      date: getNextDate(activeDay.date),
+      items: activeDay.items.map((item) => ({
+        ...item,
+        id: createId(),
+      })),
     };
 
-    setDays((currentDays) => [
-      ...currentDays,
-      copiedDay,
-    ]);
-
+    setDays((currentDays) => [...currentDays, copiedDay]);
     setActiveDayId(copiedDay.id);
   }
 
   /* -------------------------------------------------------
-   * AUTH FUNCTIONS
+   * AUTH AND SYNC FUNCTIONS
    * ----------------------------------------------------- */
 
   async function handleGoogleLogin() {
@@ -1044,31 +1285,21 @@ useEffect(() => {
       setAuthMessage("");
 
       const supabase = createClient();
-
-      const { error } =
-        await supabase.auth.signInWithOAuth({
-          provider: "google",
-          options: {
-            redirectTo:
-              `${window.location.origin}/auth/callback?next=/`,
-          },
-        });
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback?next=/`,
+        },
+      });
 
       if (error) {
         throw error;
       }
     } catch (error) {
-      console.error(
-        "Login Google gagal:",
-        error,
-      );
-
+      console.error("Login Google gagal:", error);
       setAuthStatus("error");
-
       setAuthMessage(
-        error instanceof Error
-          ? error.message
-          : "Login Google gagal.",
+        error instanceof Error ? error.message : "Login Google gagal.",
       );
     }
   }
@@ -1077,63 +1308,40 @@ useEffect(() => {
     try {
       setAuthStatus("loading");
       setAuthMessage("");
+      setSyncMessage("");
 
       const supabase = createClient();
-
-      const { error } =
-        await supabase.auth.signOut();
+      const { error } = await supabase.auth.signOut();
 
       if (error) {
         throw error;
       }
 
       projectLoadRef.current = null;
+      rundownLoadRef.current = null;
+      lastRemoteSnapshotRef.current = "";
       setProject(null);
       setUser(null);
+      setProjectStatus("idle");
+      setRemoteLoadStatus("idle");
+      setRemoteSaveStatus("loading");
       setAuthStatus("idle");
     } catch (error) {
-      console.error(
-        "Logout gagal:",
-        error,
-      );
-
+      console.error("Logout gagal:", error);
       setAuthStatus("error");
-
       setAuthMessage(
-        error instanceof Error
-          ? error.message
-          : "Gagal keluar dari akun.",
+        error instanceof Error ? error.message : "Gagal keluar dari akun.",
       );
     }
   }
 
-  /* -------------------------------------------------------
-   * STATUS DISPLAY
-   * ----------------------------------------------------- */
-
-  const saveStatusText: Record<
-    SaveStatus,
-    string
-  > = {
-    loading: "Memuat data...",
-    saving: "Menyimpan...",
-    saved: "Tersimpan otomatis",
-    error: "Gagal menyimpan",
-  };
-
-  const saveStatusAppearance: Record<
-    SaveStatus,
-    string
-  > = {
-    loading:
-      "bg-amber-400/10 text-amber-300 ring-amber-400/20",
-    saving:
-      "bg-amber-400/10 text-amber-300 ring-amber-400/20",
-    saved:
-      "bg-emerald-400/10 text-emerald-300 ring-emerald-400/20",
-    error:
-      "bg-red-400/10 text-red-300 ring-red-400/20",
-  };
+  function handleRetrySync() {
+    rundownLoadRef.current = null;
+    setSyncMessage("");
+    setRemoteLoadStatus("idle");
+    setRemoteSaveStatus("loading");
+    setSyncAttempt((current) => current + 1);
+  }
 
   if (!activeDay) {
     return null;
@@ -1145,8 +1353,6 @@ useEffect(() => {
 
   return (
     <main className="min-h-screen bg-[#f7f8fc] text-slate-950">
-      {/* HEADER */}
-
       <header className="sticky top-0 z-40 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-[1500px] items-center justify-between px-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3">
@@ -1155,28 +1361,28 @@ useEffect(() => {
             </div>
 
             <div>
-              <p className="font-black tracking-tight">
-                Rundownku
-              </p>
-
-              <p className="text-xs text-slate-500">
-                Workspace keluarga
-              </p>
+              <p className="font-black tracking-tight">Rundownku</p>
+              <p className="text-xs text-slate-500">Workspace keluarga</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <div
               className={`hidden items-center gap-2 rounded-full px-3 py-2 text-xs font-bold ring-1 sm:flex ${
-                saveStatus === "error"
+                effectiveSaveStatus === "error"
                   ? "bg-red-50 text-red-700 ring-red-100"
-                  : saveStatus === "saved"
+                  : effectiveSaveStatus === "saved"
                     ? "bg-emerald-50 text-emerald-700 ring-emerald-100"
                     : "bg-amber-50 text-amber-700 ring-amber-100"
               }`}
             >
-              <Check size={14} />
-              {saveStatusText[saveStatus]}
+              {effectiveSaveStatus === "saving" ||
+              effectiveSaveStatus === "loading" ? (
+                <RefreshCw size={14} className="animate-spin" />
+              ) : (
+                <Check size={14} />
+              )}
+              {saveStatusText[effectiveSaveStatus]}
             </div>
 
             {authStatus === "loading" ? (
@@ -1199,15 +1405,9 @@ useEffect(() => {
                   )}
 
                   <div className="hidden max-w-36 sm:block">
-                    <p className="truncate text-xs font-bold">
-                      {userName}
-                    </p>
-
+                    <p className="truncate text-xs font-bold">{userName}</p>
                     <p className="text-[10px] text-slate-300">
-                      {projectStatus ===
-                      "loading"
-                        ? "Memuat role..."
-                        : roleLabel}
+                      {projectStatus === "loading" ? "Memuat role..." : roleLabel}
                     </p>
                   </div>
                 </div>
@@ -1225,18 +1425,11 @@ useEffect(() => {
               <button
                 type="button"
                 onClick={handleGoogleLogin}
-                disabled={
-                  authStatus ===
-                  "redirecting"
-                }
+                disabled={authStatus === "redirecting"}
                 className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
               >
                 <LogIn size={17} />
-
-                {authStatus ===
-                "redirecting"
-                  ? "Mengarahkan..."
-                  : "Masuk Google"}
+                {authStatus === "redirecting" ? "Mengarahkan..." : "Masuk Google"}
               </button>
             )}
           </div>
@@ -1244,59 +1437,59 @@ useEffect(() => {
       </header>
 
       <div className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8">
-        {/* ERROR MESSAGE */}
+        {pageMessage && (
+          <div className="mb-4 flex flex-col justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 sm:flex-row sm:items-center">
+            <span>{pageMessage}</span>
 
-        {authMessage && (
-          <div className="mb-4 flex items-center justify-between gap-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
-            <span>{authMessage}</span>
+            <div className="flex gap-2">
+              {syncMessage && user && project && (
+                <button
+                  type="button"
+                  onClick={handleRetrySync}
+                  className="rounded-lg bg-red-700 px-3 py-1.5 text-xs font-black text-white"
+                >
+                  Coba lagi
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMessage("");
+                  setSyncMessage("");
+                }}
+                className="px-2 text-xs font-black"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!user && authStatus !== "loading" && (
+          <div className="mb-4 flex flex-col justify-between gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-4 sm:flex-row sm:items-center">
+            <div>
+              <p className="font-black text-indigo-950">Kamu masih memakai mode tamu</p>
+              <p className="mt-1 text-sm text-indigo-700">
+                Data disimpan di perangkat ini. Masuk Google untuk menyimpan dan
+                membukanya dari perangkat lain.
+              </p>
+            </div>
 
             <button
               type="button"
-              onClick={() =>
-                setAuthMessage("")
-              }
-              className="text-xs font-black"
+              onClick={handleGoogleLogin}
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-indigo-700"
             >
-              Tutup
+              <LogIn size={17} />
+              Masuk Google
             </button>
           </div>
         )}
 
-        {/* GUEST NOTICE */}
-
-        {!user &&
-          authStatus !== "loading" && (
-            <div className="mb-4 flex flex-col justify-between gap-3 rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-4 sm:flex-row sm:items-center">
-              <div>
-                <p className="font-black text-indigo-950">
-                  Kamu masih memakai mode
-                  tamu
-                </p>
-
-                <p className="mt-1 text-sm text-indigo-700">
-                  Masuk dengan Google agar
-                  proyek dapat disimpan
-                  online dan dibagikan.
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleGoogleLogin}
-                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-indigo-700"
-              >
-                <LogIn size={17} />
-                Masuk Google
-              </button>
-            </div>
-          )}
-
-        {/* PROJECT BANNER */}
-
         <section className="overflow-hidden rounded-[28px] bg-slate-950 text-white shadow-2xl shadow-slate-200">
           <div className="relative isolate overflow-hidden px-6 py-7 sm:px-8">
             <div className="absolute -right-24 -top-32 -z-10 size-80 rounded-full bg-indigo-500/30 blur-3xl" />
-
             <div className="absolute -bottom-28 left-1/3 -z-10 size-72 rounded-full bg-blue-500/20 blur-3xl" />
 
             <div className="flex flex-col justify-between gap-6 lg:flex-row lg:items-end">
@@ -1307,41 +1500,39 @@ useEffect(() => {
                   </span>
 
                   <span
-                    className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ring-1 ${saveStatusAppearance[saveStatus]}`}
+                    className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ring-1 ${saveStatusAppearance[effectiveSaveStatus]}`}
                   >
-                    <Check size={13} />
-                    {
-                      saveStatusText[
-                        saveStatus
-                      ]
-                    }
+                    {effectiveSaveStatus === "saving" ||
+                    effectiveSaveStatus === "loading" ? (
+                      <RefreshCw size={13} className="animate-spin" />
+                    ) : (
+                      <Check size={13} />
+                    )}
+                    {saveStatusText[effectiveSaveStatus]}
                   </span>
 
                   {user && (
                     <span className="rounded-full bg-indigo-400/10 px-3 py-1 text-xs font-bold text-indigo-200 ring-1 ring-indigo-400/20">
-                      {projectStatus ===
-                      "loading"
+                      {projectStatus === "loading"
                         ? "Menghubungkan database..."
-                        : projectStatus ===
-                            "ready"
-                          ? roleLabel
-                          : "Akun terhubung"}
+                        : remoteLoadStatus === "migrating"
+                          ? "Memigrasikan data lokal..."
+                          : projectStatus === "ready"
+                            ? roleLabel
+                            : "Akun terhubung"}
                     </span>
                   )}
                 </div>
 
                 <h1 className="text-3xl font-black tracking-tight sm:text-4xl">
-                  {projectStatus ===
-                  "loading"
+                  {projectStatus === "loading"
                     ? "Memuat proyek..."
-                    : project?.name ??
-                      "Keluarga Ketowan"}
+                    : project?.name ?? "Keluarga Ketowan"}
                 </h1>
 
                 <p className="mt-2 max-w-xl text-sm leading-6 text-slate-300">
-                  Susun kegiatan dalam satu
-                  tempat. Jam mulai dan durasi
-                  dihitung secara otomatis.
+                  Susun kegiatan dalam satu tempat. Perubahan tersimpan otomatis
+                  dan tetap memiliki cadangan lokal di perangkat.
                 </p>
               </div>
 
@@ -1350,10 +1541,8 @@ useEffect(() => {
                   type="button"
                   disabled={
                     !user ||
-                    projectStatus !==
-                      "ready" ||
-                    project?.role ===
-                      "participant"
+                    projectStatus !== "ready" ||
+                    project?.role === "participant"
                   }
                   title="Fitur undangan akan dibuat pada tahap berikutnya"
                   className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2.5 text-sm font-bold text-white ring-1 ring-white/10 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1376,25 +1565,17 @@ useEffect(() => {
           </div>
         </section>
 
-        {/* SUMMARY */}
-
         <section className="mt-5 grid gap-3 sm:grid-cols-3">
           <SummaryCard
             label="Total kegiatan"
-            value={String(
-              daySummary.totalActivities,
-            )}
+            value={String(daySummary.totalActivities)}
             helper="Dalam tab aktif"
-            icon={
-              <CalendarDays size={18} />
-            }
+            icon={<CalendarDays size={18} />}
           />
 
           <SummaryCard
             label="Total waktu"
-            value={formatDuration(
-              daySummary.totalMinutes,
-            )}
+            value={formatDuration(daySummary.totalMinutes)}
             helper="Akumulasi kegiatan"
             icon={<Clock3 size={18} />}
           />
@@ -1408,24 +1589,17 @@ useEffect(() => {
         </section>
 
         <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_310px]">
-          {/* EDITOR */}
-
           <section className="min-w-0 overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
-            {/* DAY TABS */}
-
             <div className="border-b border-slate-200 px-4 pt-4 sm:px-6">
               <div className="flex items-center gap-2 overflow-x-auto pb-4">
                 {days.map((day) => {
-                  const selected =
-                    day.id === activeDayId;
+                  const selected = day.id === activeDayId;
 
                   return (
                     <button
                       type="button"
                       key={day.id}
-                      onClick={() =>
-                        setActiveDayId(day.id)
-                      }
+                      onClick={() => setActiveDayId(day.id)}
                       className={`shrink-0 rounded-xl px-4 py-2.5 text-sm font-bold transition ${
                         selected
                           ? "bg-slate-950 text-white shadow-lg shadow-slate-200"
@@ -1450,8 +1624,6 @@ useEffect(() => {
               </div>
             </div>
 
-            {/* DAY SETTINGS */}
-
             <div className="border-b border-slate-200 bg-slate-50/70 p-4 sm:p-6">
               <div className="grid gap-4 md:grid-cols-[1fr_180px_180px_auto]">
                 <Field label="Nama tab">
@@ -1459,13 +1631,10 @@ useEffect(() => {
                     value={activeDay.title}
                     disabled={!canEdit}
                     onChange={(event) =>
-                      updateActiveDay(
-                        (day) => ({
-                          ...day,
-                          title:
-                            event.target.value,
-                        }),
-                      )
+                      updateActiveDay((day) => ({
+                        ...day,
+                        title: event.target.value,
+                      }))
                     }
                     className={INPUT_BASE}
                   />
@@ -1477,13 +1646,10 @@ useEffect(() => {
                     value={activeDay.date}
                     disabled={!canEdit}
                     onChange={(event) =>
-                      updateActiveDay(
-                        (day) => ({
-                          ...day,
-                          date:
-                            event.target.value,
-                        }),
-                      )
+                      updateActiveDay((day) => ({
+                        ...day,
+                        date: event.target.value,
+                      }))
                     }
                     className={INPUT_BASE}
                   />
@@ -1492,18 +1658,13 @@ useEffect(() => {
                 <Field label="Mulai pertama">
                   <input
                     type="time"
-                    value={
-                      activeDay.firstStartTime
-                    }
+                    value={activeDay.firstStartTime}
                     disabled={!canEdit}
                     onChange={(event) =>
-                      updateActiveDay(
-                        (day) => ({
-                          ...day,
-                          firstStartTime:
-                            event.target.value,
-                        }),
-                      )
+                      updateActiveDay((day) => ({
+                        ...day,
+                        firstStartTime: event.target.value,
+                      }))
                     }
                     className={INPUT_BASE}
                   />
@@ -1513,9 +1674,7 @@ useEffect(() => {
                   <button
                     type="button"
                     disabled={!canEdit}
-                    onClick={
-                      duplicateActiveDay
-                    }
+                    onClick={duplicateActiveDay}
                     className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 md:w-auto"
                   >
                     <Copy size={16} />
@@ -1525,371 +1684,210 @@ useEffect(() => {
               </div>
             </div>
 
-            {/* ITEMS */}
-
             <div className="p-4 sm:p-6">
               <div className="mb-5 flex items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-lg font-black">
-                    Rundown{" "}
-                    {activeDay.title}
-                  </h2>
-
+                  <h2 className="text-lg font-black">Rundown {activeDay.title}</h2>
                   <p className="mt-1 text-sm text-slate-500">
-                    {formatDate(
-                      activeDay.date,
-                    )}
+                    {formatDate(activeDay.date)}
                   </p>
                 </div>
 
                 {!canEdit && (
                   <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600">
-                    Mode lihat
+                    {remoteLoadStatus === "ready" ? "Mode lihat" : "Memuat data"}
                   </span>
                 )}
               </div>
 
-              {activeDay.items.length ===
-              0 ? (
-                <EmptyState
-                  onAdd={addItem}
-                  canEdit={canEdit}
-                />
+              {activeDay.items.length === 0 ? (
+                <EmptyState onAdd={addItem} canEdit={canEdit} />
               ) : (
                 <div className="space-y-3">
-                  {activeDay.items.map(
-                    (item, index) => {
-                      const startTime =
-                        index === 0
-                          ? activeDay.firstStartTime
-                          : activeDay.items[
-                              index - 1
-                            ].endTime;
+                  {activeDay.items.map((item, index) => {
+                    const startTime =
+                      index === 0
+                        ? activeDay.firstStartTime
+                        : activeDay.items[index - 1].endTime;
 
-                      const duration =
-                        calculateDurationMinutes(
-                          startTime,
-                          item.endTime,
-                        );
+                    const duration = calculateDurationMinutes(
+                      startTime,
+                      item.endTime,
+                    );
 
-                      const incomplete =
-                        !item.activity.trim() ||
-                        !item.endTime;
+                    const incomplete =
+                      !item.activity.trim() || !item.endTime;
 
-                      return (
-                        <article
-                          key={item.id}
-                          className={`overflow-hidden rounded-2xl border bg-white transition ${
-                            incomplete
-                              ? "border-amber-200"
-                              : "border-slate-200 hover:border-indigo-200 hover:shadow-lg hover:shadow-slate-100"
-                          }`}
-                        >
-                          <div className="grid lg:grid-cols-[178px_minmax(0,1fr)_150px]">
-                            {/* TIME */}
+                    return (
+                      <article
+                        key={item.id}
+                        className={`overflow-hidden rounded-2xl border bg-white transition ${
+                          incomplete
+                            ? "border-amber-200"
+                            : "border-slate-200 hover:border-indigo-200 hover:shadow-lg hover:shadow-slate-100"
+                        }`}
+                      >
+                        <div className="grid lg:grid-cols-[178px_minmax(0,1fr)_150px]">
+                          <div className="border-b border-slate-200 bg-slate-50 p-4 lg:border-b-0 lg:border-r">
+                            <div className="flex items-start justify-between lg:block">
+                              <div>
+                                <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                                  Kegiatan {index + 1}
+                                </p>
 
-                            <div className="border-b border-slate-200 bg-slate-50 p-4 lg:border-b-0 lg:border-r">
-                              <div className="flex items-start justify-between lg:block">
-                                <div>
-                                  <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">
-                                    Kegiatan{" "}
-                                    {index + 1}
-                                  </p>
-
-                                  <div className="mt-3 flex items-center gap-2 text-lg font-black">
-                                    <span>
-                                      {startTime ||
-                                        "--:--"}
-                                    </span>
-
-                                    <span className="text-slate-300">
-                                      →
-                                    </span>
-
-                                    <span>
-                                      {item.endTime ||
-                                        "--:--"}
-                                    </span>
-                                  </div>
-
-                                  <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-indigo-700 ring-1 ring-slate-200">
-                                    <Clock3
-                                      size={13}
-                                    />
-
-                                    {formatDuration(
-                                      duration,
-                                    )}
-                                  </div>
+                                <div className="mt-3 flex items-center gap-2 text-lg font-black">
+                                  <span>{startTime || "--:--"}</span>
+                                  <span className="text-slate-300">→</span>
+                                  <span>{item.endTime || "--:--"}</span>
                                 </div>
 
-                                {canEdit && (
-                                  <div className="flex gap-1 lg:mt-5">
-                                    <SmallIconButton
-                                      label="Pindahkan ke atas"
-                                      disabled={
-                                        index === 0
-                                      }
-                                      onClick={() =>
-                                        moveItem(
-                                          item.id,
-                                          "up",
-                                        )
-                                      }
-                                    >
-                                      <ArrowUp
-                                        size={15}
-                                      />
-                                    </SmallIconButton>
-
-                                    <SmallIconButton
-                                      label="Pindahkan ke bawah"
-                                      disabled={
-                                        index ===
-                                        activeDay
-                                          .items
-                                          .length -
-                                          1
-                                      }
-                                      onClick={() =>
-                                        moveItem(
-                                          item.id,
-                                          "down",
-                                        )
-                                      }
-                                    >
-                                      <ArrowDown
-                                        size={15}
-                                      />
-                                    </SmallIconButton>
-                                  </div>
-                                )}
+                                <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-indigo-700 ring-1 ring-slate-200">
+                                  <Clock3 size={13} />
+                                  {formatDuration(duration)}
+                                </div>
                               </div>
-                            </div>
-
-                            {/* FIELDS */}
-
-                            <div className="min-w-0 p-4">
-                              <div className="grid gap-3 md:grid-cols-[150px_minmax(0,1fr)]">
-                                <Field
-                                  label="Jam selesai"
-                                  required
-                                >
-                                  <input
-                                    type="time"
-                                    value={
-                                      item.endTime
-                                    }
-                                    disabled={
-                                      !canEdit
-                                    }
-                                    onChange={(
-                                      event,
-                                    ) =>
-                                      patchItem(
-                                        item.id,
-                                        {
-                                          endTime:
-                                            event
-                                              .target
-                                              .value,
-                                        },
-                                      )
-                                    }
-                                    className={
-                                      INPUT_REQUIRED
-                                    }
-                                  />
-                                </Field>
-
-                                <Field
-                                  label="Nama kegiatan"
-                                  required
-                                >
-                                  <input
-                                    value={
-                                      item.activity
-                                    }
-                                    disabled={
-                                      !canEdit
-                                    }
-                                    placeholder="Contoh: Free Time"
-                                    onChange={(
-                                      event,
-                                    ) =>
-                                      patchItem(
-                                        item.id,
-                                        {
-                                          activity:
-                                            event
-                                              .target
-                                              .value,
-                                        },
-                                      )
-                                    }
-                                    className={
-                                      INPUT_REQUIRED
-                                    }
-                                  />
-                                </Field>
-                              </div>
-
-                              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                <Field label="Penanggung jawab">
-                                  <input
-                                    value={
-                                      item.personInCharge
-                                    }
-                                    disabled={
-                                      !canEdit
-                                    }
-                                    placeholder="Pilih atau tulis PIC"
-                                    onChange={(
-                                      event,
-                                    ) =>
-                                      patchItem(
-                                        item.id,
-                                        {
-                                          personInCharge:
-                                            event
-                                              .target
-                                              .value,
-                                        },
-                                      )
-                                    }
-                                    className={
-                                      INPUT_BASE
-                                    }
-                                  />
-                                </Field>
-
-                                <Field label="Penerima Calendar">
-                                  <select
-                                    value={
-                                      item.audience
-                                    }
-                                    disabled={
-                                      !canEdit
-                                    }
-                                    onChange={(
-                                      event,
-                                    ) =>
-                                      patchItem(
-                                        item.id,
-                                        {
-                                          audience:
-                                            event
-                                              .target
-                                              .value as CalendarAudience,
-                                        },
-                                      )
-                                    }
-                                    className={
-                                      INPUT_BASE
-                                    }
-                                  >
-                                    <option>
-                                      Semua peserta
-                                    </option>
-
-                                    <option>
-                                      Hanya PIC
-                                    </option>
-
-                                    <option>
-                                      Tidak
-                                      disinkronkan
-                                    </option>
-                                  </select>
-                                </Field>
-                              </div>
-
-                              <Field label="Keterangan">
-                                <textarea
-                                  value={item.note}
-                                  disabled={
-                                    !canEdit
-                                  }
-                                  rows={2}
-                                  placeholder="Catatan tambahan, lokasi, atau perlengkapan..."
-                                  onChange={(
-                                    event,
-                                  ) =>
-                                    patchItem(
-                                      item.id,
-                                      {
-                                        note:
-                                          event
-                                            .target
-                                            .value,
-                                      },
-                                    )
-                                  }
-                                  className={`${INPUT_BASE} mt-3 h-auto resize-none py-3`}
-                                />
-                              </Field>
-                            </div>
-
-                            {/* STATUS */}
-
-                            <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/70 px-4 py-3 lg:flex-col lg:items-stretch lg:justify-start lg:border-l lg:border-t-0">
-                              <span
-                                className={`inline-flex items-center justify-center rounded-full px-3 py-1.5 text-center text-xs font-bold ring-1 ${getAudienceAppearance(
-                                  item.audience,
-                                )}`}
-                              >
-                                {item.audience}
-                              </span>
-
-                              {incomplete ? (
-                                <span className="text-center text-xs font-bold text-amber-700">
-                                  Belum lengkap
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center justify-center gap-1.5 text-xs font-bold text-emerald-700">
-                                  <Check
-                                    size={14}
-                                  />
-                                  Siap
-                                </span>
-                              )}
 
                               {canEdit && (
-                                <div className="flex justify-center gap-1 lg:mt-auto">
+                                <div className="flex gap-1 lg:mt-5">
                                   <SmallIconButton
-                                    label="Duplikat kegiatan"
-                                    onClick={() =>
-                                      duplicateItem(
-                                        item.id,
-                                      )
-                                    }
+                                    label="Pindahkan ke atas"
+                                    disabled={index === 0}
+                                    onClick={() => moveItem(item.id, "up")}
                                   >
-                                    <Copy
-                                      size={15}
-                                    />
+                                    <ArrowUp size={15} />
                                   </SmallIconButton>
 
                                   <SmallIconButton
-                                    label="Hapus kegiatan"
-                                    danger
-                                    onClick={() =>
-                                      deleteItem(
-                                        item.id,
-                                      )
-                                    }
+                                    label="Pindahkan ke bawah"
+                                    disabled={index === activeDay.items.length - 1}
+                                    onClick={() => moveItem(item.id, "down")}
                                   >
-                                    <Trash2
-                                      size={15}
-                                    />
+                                    <ArrowDown size={15} />
                                   </SmallIconButton>
                                 </div>
                               )}
                             </div>
                           </div>
-                        </article>
-                      );
-                    },
-                  )}
+
+                          <div className="min-w-0 p-4">
+                            <div className="grid gap-3 md:grid-cols-[150px_minmax(0,1fr)]">
+                              <Field label="Jam selesai" required>
+                                <input
+                                  type="time"
+                                  value={item.endTime}
+                                  disabled={!canEdit}
+                                  onChange={(event) =>
+                                    patchItem(item.id, {
+                                      endTime: event.target.value,
+                                    })
+                                  }
+                                  className={INPUT_REQUIRED}
+                                />
+                              </Field>
+
+                              <Field label="Nama kegiatan" required>
+                                <input
+                                  value={item.activity}
+                                  disabled={!canEdit}
+                                  placeholder="Contoh: Free Time"
+                                  onChange={(event) =>
+                                    patchItem(item.id, {
+                                      activity: event.target.value,
+                                    })
+                                  }
+                                  className={INPUT_REQUIRED}
+                                />
+                              </Field>
+                            </div>
+
+                            <div className="mt-3 grid gap-3 md:grid-cols-2">
+                              <Field label="Penanggung jawab">
+                                <input
+                                  value={item.personInCharge}
+                                  disabled={!canEdit}
+                                  placeholder="Tulis nama PIC"
+                                  onChange={(event) =>
+                                    patchItem(item.id, {
+                                      personInCharge: event.target.value,
+                                    })
+                                  }
+                                  className={INPUT_BASE}
+                                />
+                              </Field>
+
+                              <Field label="Penerima Calendar">
+                                <select
+                                  value={item.audience}
+                                  disabled={!canEdit}
+                                  onChange={(event) =>
+                                    patchItem(item.id, {
+                                      audience: event.target.value as CalendarAudience,
+                                    })
+                                  }
+                                  className={INPUT_BASE}
+                                >
+                                  <option>Semua peserta</option>
+                                  <option>Hanya PIC</option>
+                                  <option>Tidak disinkronkan</option>
+                                </select>
+                              </Field>
+                            </div>
+
+                            <Field label="Keterangan">
+                              <textarea
+                                value={item.note}
+                                disabled={!canEdit}
+                                rows={2}
+                                placeholder="Catatan tambahan, lokasi, atau perlengkapan..."
+                                onChange={(event) =>
+                                  patchItem(item.id, { note: event.target.value })
+                                }
+                                className={`${INPUT_BASE} mt-3 h-auto resize-none py-3`}
+                              />
+                            </Field>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/70 px-4 py-3 lg:flex-col lg:items-stretch lg:justify-start lg:border-l lg:border-t-0">
+                            <span
+                              className={`inline-flex items-center justify-center rounded-full px-3 py-1.5 text-center text-xs font-bold ring-1 ${getAudienceAppearance(item.audience)}`}
+                            >
+                              {item.audience}
+                            </span>
+
+                            {incomplete ? (
+                              <span className="text-center text-xs font-bold text-amber-700">
+                                Belum lengkap
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center justify-center gap-1.5 text-xs font-bold text-emerald-700">
+                                <Check size={14} />
+                                Siap
+                              </span>
+                            )}
+
+                            {canEdit && (
+                              <div className="flex justify-center gap-1 lg:mt-auto">
+                                <SmallIconButton
+                                  label="Duplikat kegiatan"
+                                  onClick={() => duplicateItem(item.id)}
+                                >
+                                  <Copy size={15} />
+                                </SmallIconButton>
+
+                                <SmallIconButton
+                                  label="Hapus kegiatan"
+                                  danger
+                                  onClick={() => deleteItem(item.id)}
+                                >
+                                  <Trash2 size={15} />
+                                </SmallIconButton>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               )}
 
@@ -1906,11 +1904,7 @@ useEffect(() => {
             </div>
           </section>
 
-          {/* SIDEBAR */}
-
           <aside className="space-y-4">
-            {/* ACCOUNT */}
-
             <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-3">
                 <div className="grid size-10 place-items-center rounded-xl bg-indigo-50 text-indigo-700">
@@ -1918,38 +1912,23 @@ useEffect(() => {
                 </div>
 
                 <div className="min-w-0">
-                  <h3 className="truncate font-black">
-                    {userName}
-                  </h3>
-
+                  <h3 className="truncate font-black">{userName}</h3>
                   <p className="truncate text-xs text-slate-500">
-                    {user?.email ??
-                      "Belum masuk akun"}
+                    {user?.email ?? "Belum masuk akun"}
                   </p>
                 </div>
               </div>
 
               <StatusRow
                 label="Status akun"
-                value={
-                  user
-                    ? "Terhubung"
-                    : "Mode tamu"
-                }
+                value={user ? "Terhubung" : "Mode tamu"}
                 completed={Boolean(user)}
               />
 
               <StatusRow
                 label="Role proyek"
-                value={
-                  projectStatus ===
-                  "loading"
-                    ? "Memuat..."
-                    : roleLabel
-                }
-                completed={
-                  projectStatus === "ready"
-                }
+                value={projectStatus === "loading" ? "Memuat..." : roleLabel}
+                completed={projectStatus === "ready"}
               />
 
               {!user && (
@@ -1964,8 +1943,6 @@ useEffect(() => {
               )}
             </div>
 
-            {/* REMINDERS */}
-
             <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-3">
                 <div className="grid size-10 place-items-center rounded-xl bg-indigo-50 text-indigo-700">
@@ -1973,10 +1950,7 @@ useEffect(() => {
                 </div>
 
                 <div>
-                  <h3 className="font-black">
-                    Pengingat Calendar
-                  </h3>
-
+                  <h3 className="font-black">Pengingat Calendar</h3>
                   <p className="text-xs text-slate-500">
                     Aktif setelah integrasi
                   </p>
@@ -1988,7 +1962,6 @@ useEffect(() => {
                   title="10 menit sebelumnya"
                   description="Persiapan kegiatan berikutnya"
                 />
-
                 <ReminderOption
                   title="Saat kegiatan mulai"
                   description="Notifikasi tepat waktu"
@@ -1996,45 +1969,31 @@ useEffect(() => {
               </div>
             </div>
 
-            {/* PROJECT STATUS */}
-
             <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center justify-between">
                 <div>
-                  <h3 className="font-black">
-                    Status proyek
-                  </h3>
-
-                  <p className="mt-1 text-xs text-slate-500">
-                    Tahap integrasi
-                  </p>
+                  <h3 className="font-black">Status proyek</h3>
+                  <p className="mt-1 text-xs text-slate-500">Tahap integrasi</p>
                 </div>
 
-                <MoreHorizontal
-                  size={18}
-                  className="text-slate-400"
-                />
+                <MoreHorizontal size={18} className="text-slate-400" />
               </div>
 
               <StatusRow
-                label="Data lokal"
+                label="Cadangan lokal"
                 value={
-                  saveStatus === "saved"
+                  localSaveStatus === "saved"
                     ? "Tersimpan"
-                    : saveStatus === "error"
+                    : localSaveStatus === "error"
                       ? "Bermasalah"
                       : "Memproses"
                 }
-                completed={
-                  saveStatus === "saved"
-                }
+                completed={localSaveStatus === "saved"}
               />
 
               <StatusRow
                 label="Login Google"
-                value={
-                  user ? "Aktif" : "Belum"
-                }
+                value={user ? "Aktif" : "Belum"}
                 completed={Boolean(user)}
               />
 
@@ -2043,49 +2002,50 @@ useEffect(() => {
                 value={
                   projectStatus === "ready"
                     ? "Terhubung"
-                    : projectStatus ===
-                        "loading"
+                    : projectStatus === "loading"
                       ? "Menghubungkan"
-                      : projectStatus ===
-                          "error"
+                      : projectStatus === "error"
                         ? "Bermasalah"
                         : "Belum"
                 }
-                completed={
-                  projectStatus === "ready"
-                }
+                completed={projectStatus === "ready"}
               />
 
               <StatusRow
                 label="Rundown online"
-                value="Belum"
+                value={
+                  remoteLoadStatus === "ready" && remoteSaveStatus === "saved"
+                    ? "Tersimpan"
+                    : remoteLoadStatus === "migrating"
+                      ? "Memigrasikan"
+                      : remoteSaveStatus === "saving"
+                        ? "Menyimpan"
+                        : remoteLoadStatus === "error" ||
+                            remoteSaveStatus === "error"
+                          ? "Bermasalah"
+                          : user
+                            ? "Memuat"
+                            : "Belum login"
+                }
+                completed={
+                  remoteLoadStatus === "ready" && remoteSaveStatus === "saved"
+                }
               />
 
-              <StatusRow
-                label="Google Calendar"
-                value="Belum"
-              />
+              <StatusRow label="Google Calendar" value="Belum" />
 
-              <div className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                Proyek dan role sudah tersimpan
-                di Supabase. Isi tab dan kegiatan
-                masih tersimpan secara lokal.
+              <div className="mt-4 rounded-xl bg-emerald-50 p-3 text-xs leading-5 text-emerald-800">
+                Saat login, hari dan kegiatan tersimpan di Supabase. Cadangan lokal
+                tetap dibuat agar perubahan lebih aman.
               </div>
             </div>
 
-            {/* HELP */}
-
             <div className="rounded-[24px] bg-gradient-to-br from-indigo-600 to-blue-600 p-5 text-white shadow-xl shadow-indigo-100">
               <Sparkles size={21} />
-
-              <h3 className="mt-4 text-lg font-black">
-                Alur sederhana
-              </h3>
-
+              <h3 className="mt-4 text-lg font-black">Alur sederhana</h3>
               <p className="mt-2 text-sm leading-6 text-indigo-100">
-                Isi jam selesai dan nama
-                kegiatan. Jam mulai serta
-                durasi akan dihitung otomatis.
+                Isi jam selesai dan nama kegiatan. Jam mulai serta durasi akan
+                dihitung otomatis dan disimpan online.
               </p>
             </div>
           </aside>
@@ -2117,14 +2077,8 @@ function SummaryCard({
           <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
             {label}
           </p>
-
-          <p className="mt-2 text-2xl font-black">
-            {value}
-          </p>
-
-          <p className="mt-1 text-xs text-slate-500">
-            {helper}
-          </p>
+          <p className="mt-2 text-2xl font-black">{value}</p>
+          <p className="mt-1 text-xs text-slate-500">{helper}</p>
         </div>
 
         <div className="grid size-10 place-items-center rounded-xl bg-slate-100 text-slate-700">
@@ -2148,14 +2102,8 @@ function Field({
     <label className="block min-w-0">
       <span className="mb-1.5 flex items-center gap-1 text-xs font-bold text-slate-500">
         {label}
-
-        {required && (
-          <span className="text-amber-600">
-            *
-          </span>
-        )}
+        {required && <span className="text-amber-600">*</span>}
       </span>
-
       {children}
     </label>
   );
@@ -2206,10 +2154,7 @@ function ReminderOption({
       </div>
 
       <div>
-        <p className="text-sm font-bold text-slate-800">
-          {title}
-        </p>
-
+        <p className="text-sm font-bold text-slate-800">{title}</p>
         <p className="mt-0.5 text-xs leading-5 text-slate-500">
           {description}
         </p>
@@ -2229,15 +2174,10 @@ function StatusRow({
 }) {
   return (
     <div className="flex items-center justify-between gap-4 border-b border-slate-100 py-3 last:border-0">
-      <span className="text-sm text-slate-600">
-        {label}
-      </span>
-
+      <span className="text-sm text-slate-600">{label}</span>
       <span
         className={`text-right text-xs font-bold ${
-          completed
-            ? "text-emerald-700"
-            : "text-slate-400"
+          completed ? "text-emerald-700" : "text-slate-400"
         }`}
       >
         {value}
@@ -2259,10 +2199,7 @@ function EmptyState({
         <CalendarDays size={24} />
       </div>
 
-      <h3 className="mt-4 text-lg font-black">
-        Belum ada kegiatan
-      </h3>
-
+      <h3 className="mt-4 text-lg font-black">Belum ada kegiatan</h3>
       <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">
         {canEdit
           ? "Tambahkan kegiatan pertama. Jam mulai akan mengikuti pengaturan awal tab."
