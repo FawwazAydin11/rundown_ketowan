@@ -21,12 +21,16 @@ import {
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import {
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
+import GoogleCalendarConnection, {
+  type GoogleCalendarStatus,
+} from "@/components/GoogleCalendarConnection";
 import InvitePeopleDialog from "@/components/InvitePeopleDialog";
 import ManageMembersDialog from "@/components/ManageMembersDialog";
 import PicMemberSelect, {
@@ -700,6 +704,15 @@ export default function Home() {
     "idle" | "loading" | "ready" | "error"
   >("idle");
   const [membersReloadToken, setMembersReloadToken] = useState(0);
+  const [googleCalendarStatus, setGoogleCalendarStatus] =
+    useState<GoogleCalendarStatus | null>(null);
+
+  const handleGoogleCalendarStatusChange = useCallback(
+    (status: GoogleCalendarStatus) => {
+      setGoogleCalendarStatus(status);
+    },
+    [],
+  );
 
   const localSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -1719,7 +1732,11 @@ export default function Home() {
                 <button
                   type="button"
                   disabled
-                  title="Google Calendar belum dihubungkan"
+                  title={
+                    googleCalendarStatus?.connected
+                      ? "Penerbitan event Google Calendar dibuat pada tahap berikutnya"
+                      : "Hubungkan Google Calendar terlebih dahulu"
+                  }
                   className="inline-flex cursor-not-allowed items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-black text-slate-950 opacity-70"
                 >
                   <CalendarDays size={17} />
@@ -2138,6 +2155,11 @@ export default function Home() {
               )}
             </div>
 
+            <GoogleCalendarConnection
+              loggedIn={Boolean(user)}
+              onStatusChange={handleGoogleCalendarStatusChange}
+            />
+
             <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-3">
                 <div className="grid size-10 place-items-center rounded-xl bg-indigo-50 text-indigo-700">
@@ -2227,7 +2249,17 @@ export default function Home() {
                 }
               />
 
-              <StatusRow label="Google Calendar" value="Belum" />
+              <StatusRow
+                label="Google Calendar"
+                value={
+                  !user
+                    ? "Belum login"
+                    : googleCalendarStatus?.connected
+                      ? "Terhubung"
+                      : "Belum"
+                }
+                completed={Boolean(googleCalendarStatus?.connected)}
+              />
 
               <div className="mt-4 rounded-xl bg-emerald-50 p-3 text-xs leading-5 text-emerald-800">
                 Saat login, hari dan kegiatan tersimpan di Supabase. Cadangan lokal
