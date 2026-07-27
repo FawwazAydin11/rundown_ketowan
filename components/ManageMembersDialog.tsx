@@ -40,12 +40,14 @@ export default function ManageMembersDialog({
   projectId,
   projectName,
   currentRole,
+  onMembersChanged,
   onClose,
 }: {
   open: boolean;
   projectId: string | null;
   projectName: string;
   currentRole: ProjectRole | null;
+  onMembersChanged?: () => void;
   onClose: () => void;
 }) {
   const [members, setMembers] = useState<ProjectMember[]>([]);
@@ -154,6 +156,7 @@ export default function ManageMembersDialog({
           member.userId === userId ? { ...member, role } : member,
         ),
       );
+      onMembersChanged?.();
       setMessage("Role anggota berhasil diperbarui.");
     } catch (error) {
       console.error("Gagal mengubah role anggota:", error);
@@ -187,6 +190,7 @@ export default function ManageMembersDialog({
       setMembers((current) =>
         current.filter((item) => item.userId !== member.userId),
       );
+      onMembersChanged?.();
       setPendingRemoval(null);
       setMessage(`${member.fullName || "Anggota"} berhasil dikeluarkan.`);
     } catch (error) {

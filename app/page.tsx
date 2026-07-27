@@ -29,6 +29,9 @@ import {
 
 import InvitePeopleDialog from "@/components/InvitePeopleDialog";
 import ManageMembersDialog from "@/components/ManageMembersDialog";
+import PicMemberSelect, {
+  type PicMemberOption,
+} from "@/components/PicMemberSelect";
 import { createClient } from "@/lib/supabase/client";
 
 /* =========================================================
@@ -51,6 +54,7 @@ type RundownItem = {
   activity: string;
   note: string;
   personInCharge: string;
+  assigneeIds: string[];
   audience: CalendarAudience;
 };
 
@@ -100,6 +104,7 @@ type RemoteItemPayload = {
   activity: string;
   note: string;
   personInCharge: string;
+  assigneeIds: string[];
   calendarScope: CalendarScope;
 };
 
@@ -109,6 +114,12 @@ type RemoteDayPayload = {
   date: string;
   firstStartTime: string;
   items: RemoteItemPayload[];
+};
+
+type MembersResponse = {
+  projectId: string;
+  members: PicMemberOption[];
+  total: number;
 };
 
 /* =========================================================
@@ -146,6 +157,7 @@ const initialDays: RundownDay[] = [
         activity: "Free Time",
         note: "",
         personInCharge: "",
+        assigneeIds: [],
         audience: "Semua peserta",
       },
       {
@@ -154,6 +166,7 @@ const initialDays: RundownDay[] = [
         activity: "Ambil tai sapi",
         note: "",
         personInCharge: "",
+        assigneeIds: [],
         audience: "Hanya PIC",
       },
       {
@@ -162,6 +175,7 @@ const initialDays: RundownDay[] = [
         activity: "Free Time",
         note: "",
         personInCharge: "",
+        assigneeIds: [],
         audience: "Semua peserta",
       },
       {
@@ -170,6 +184,7 @@ const initialDays: RundownDay[] = [
         activity: "Melanjutkan proses pembuatan mie",
         note: "",
         personInCharge: "",
+        assigneeIds: [],
         audience: "Hanya PIC",
       },
       {
@@ -178,6 +193,7 @@ const initialDays: RundownDay[] = [
         activity: "Free Time",
         note: "",
         personInCharge: "",
+        assigneeIds: [],
         audience: "Semua peserta",
       },
       {
@@ -186,6 +202,7 @@ const initialDays: RundownDay[] = [
         activity: "pengajian anjay bersama ebok",
         note: "",
         personInCharge: "",
+        assigneeIds: [],
         audience: "Semua peserta",
       },
     ],
@@ -338,6 +355,20 @@ function scopeToAudience(scope: unknown): CalendarAudience {
   }
 }
 
+function ensureAssigneeIds(days: RundownDay[]): RundownDay[] {
+  return days.map((day) => ({
+    ...day,
+    items: day.items.map((item) => ({
+      ...item,
+      assigneeIds: Array.isArray(item.assigneeIds)
+        ? item.assigneeIds.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : [],
+    })),
+  }));
+}
+
 function isStoredRundownData(value: unknown): value is StoredRundownData {
   if (!value || typeof value !== "object") {
     return false;
@@ -361,7 +392,14 @@ function readStoredRundown(key: string): StoredRundownData | null {
     }
 
     const parsedValue: unknown = JSON.parse(storedValue);
-    return isStoredRundownData(parsedValue) ? parsedValue : null;
+    if (!isStoredRundownData(parsedValue)) {
+      return null;
+    }
+
+    return {
+      ...parsedValue,
+      days: ensureAssigneeIds(parsedValue.days),
+    };
   } catch (error) {
     console.error(`Gagal membaca penyimpanan lokal ${key}:`, error);
     return null;
@@ -418,6 +456,7 @@ function toRemotePayload(days: RundownDay[]): RemoteDayPayload[] {
       activity: item.activity,
       note: item.note,
       personInCharge: item.personInCharge,
+      assigneeIds: Array.isArray(item.assigneeIds) ? item.assigneeIds : [],
       calendarScope: audienceToScope(item.audience),
     })),
   }));
@@ -473,6 +512,11 @@ function normalizeRemoteRundown(value: unknown): RundownDay[] {
               typeof item.personInCharge === "string"
                 ? item.personInCharge
                 : "",
+            assigneeIds: Array.isArray(item.assigneeIds)
+              ? item.assigneeIds.filter(
+                  (value): value is string => typeof value === "string",
+                )
+              : [],
             audience: scopeToAudience(item.calendarScope),
           };
         })
@@ -651,6 +695,11 @@ export default function Home() {
   const [syncAttempt, setSyncAttempt] = useState(0);
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
   const [membersDialogOpen, setMembersDialogOpen] = useState(false);
+  const [projectMembers, setProjectMembers] = useState<PicMemberOption[]>([]);
+  const [membersLoadStatus, setMembersLoadStatus] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
+  const [membersReloadToken, setMembersReloadToken] = useState(0);
 
   const localSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -882,6 +931,61 @@ export default function Home() {
       cancelled = true;
     };
   }, [user]);
+
+  /* -------------------------------------------------------
+   * LOAD PROJECT MEMBERS FOR PIC SELECTOR
+   * ----------------------------------------------------- */
+
+  useEffect(() => {
+    if (!user || !project || projectStatus !== "ready") {
+      setProjectMembers([]);
+      setMembersLoadStatus("idle");
+      return;
+    }
+
+    const supabase = createClient();
+    const projectId = project.id;
+    let cancelled = false;
+
+    async function loadProjectMembers() {
+      try {
+        setMembersLoadStatus("loading");
+
+        const { data, error } = await supabase.rpc("get_project_members", {
+          p_project_id: projectId,
+        });
+
+        if (error) {
+          throw error;
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        const response = data as MembersResponse | null;
+        setProjectMembers(
+          Array.isArray(response?.members) ? response.members : [],
+        );
+        setMembersLoadStatus("ready");
+      } catch (error) {
+        console.error("Gagal memuat anggota untuk PIC:", error);
+
+        if (cancelled) {
+          return;
+        }
+
+        setProjectMembers([]);
+        setMembersLoadStatus("error");
+      }
+    }
+
+    void loadProjectMembers();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [membersReloadToken, project, projectStatus, user]);
 
   /* -------------------------------------------------------
    * LOAD ONLINE RUNDOWN OR MIGRATE LOCAL DATA
@@ -1217,6 +1321,7 @@ export default function Home() {
           activity: "",
           note: "",
           personInCharge: "",
+          assigneeIds: [],
           audience: "Hanya PIC",
         },
       ],
@@ -1862,17 +1967,47 @@ export default function Home() {
 
                             <div className="mt-3 grid gap-3 md:grid-cols-2">
                               <Field label="Penanggung jawab">
-                                <input
-                                  value={item.personInCharge}
-                                  disabled={!canEdit}
-                                  placeholder="Tulis nama PIC"
-                                  onChange={(event) =>
-                                    patchItem(item.id, {
-                                      personInCharge: event.target.value,
-                                    })
-                                  }
-                                  className={INPUT_BASE}
-                                />
+                                {user ? (
+                                  <PicMemberSelect
+                                    members={projectMembers}
+                                    selectedIds={item.assigneeIds}
+                                    legacyName={item.personInCharge}
+                                    disabled={!canEdit}
+                                    loading={membersLoadStatus === "loading"}
+                                    loadError={membersLoadStatus === "error"}
+                                    onRefresh={() =>
+                                      setMembersReloadToken((value) => value + 1)
+                                    }
+                                    onChange={(assigneeIds) => {
+                                      const selectedNames = assigneeIds
+                                        .map(
+                                          (userId) =>
+                                            projectMembers.find(
+                                              (member) => member.userId === userId,
+                                            )?.fullName ?? "",
+                                        )
+                                        .filter(Boolean)
+                                        .join(", ");
+
+                                      patchItem(item.id, {
+                                        assigneeIds,
+                                        personInCharge: selectedNames,
+                                      });
+                                    }}
+                                  />
+                                ) : (
+                                  <input
+                                    value={item.personInCharge}
+                                    disabled={!canEdit}
+                                    placeholder="Masuk Google untuk memilih anggota"
+                                    onChange={(event) =>
+                                      patchItem(item.id, {
+                                        personInCharge: event.target.value,
+                                      })
+                                    }
+                                    className={INPUT_BASE}
+                                  />
+                                )}
                               </Field>
 
                               <Field label="Penerima Calendar">
@@ -2124,6 +2259,9 @@ export default function Home() {
         projectId={project?.id ?? null}
         projectName={project?.name ?? "Keluarga Ketowan"}
         currentRole={project?.role ?? null}
+        onMembersChanged={() =>
+          setMembersReloadToken((value) => value + 1)
+        }
         onClose={() => setMembersDialogOpen(false)}
       />
     </main>
