@@ -27,6 +27,7 @@ import {
   useState,
 } from "react";
 
+import InvitePeopleDialog from "@/components/InvitePeopleDialog";
 import { createClient } from "@/lib/supabase/client";
 
 /* =========================================================
@@ -114,6 +115,7 @@ type RemoteDayPayload = {
  * ======================================================= */
 
 const GUEST_STORAGE_KEY = "rundownku-guest-v4";
+const PREFERRED_PROJECT_STORAGE_KEY = "rundownku-preferred-project-id";
 
 const LEGACY_STORAGE_KEYS = [
   "rundownku-data-v3",
@@ -524,7 +526,32 @@ async function getProjectRole(
 async function getOrCreateDefaultProject(
   supabase: SupabaseClient,
   user: User,
+  preferredProjectId?: string | null,
 ): Promise<RundownProject> {
+  if (preferredProjectId) {
+    const { data: preferredProject, error: preferredError } = await supabase
+      .from("projects")
+      .select(PROJECT_COLUMNS)
+      .eq("id", preferredProjectId)
+      .maybeSingle();
+
+    if (preferredError) {
+      throw new Error(`Gagal membaca proyek pilihan: ${preferredError.message}`);
+    }
+
+    if (preferredProject) {
+      const project = preferredProject as ProjectRow;
+      const role = await getProjectRole(
+        supabase,
+        project.id,
+        user.id,
+        project.owner_id,
+      );
+
+      return { ...project, role };
+    }
+  }
+
   const { data: existingProject, error: selectError } = await supabase
     .from("projects")
     .select(PROJECT_COLUMNS)
@@ -621,6 +648,7 @@ export default function Home() {
     useState<SaveStatus>("loading");
   const [syncMessage, setSyncMessage] = useState("");
   const [syncAttempt, setSyncAttempt] = useState(0);
+  const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
 
   const localSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -810,14 +838,24 @@ export default function Home() {
       try {
         setProjectStatus("loading");
 
+        const preferredProjectId = window.localStorage.getItem(
+          PREFERRED_PROJECT_STORAGE_KEY,
+        );
+
         const result = await getOrCreateDefaultProject(
           supabase,
           currentUser,
+          preferredProjectId,
         );
 
         if (cancelled) {
           return;
         }
+
+        window.localStorage.setItem(
+          PREFERRED_PROJECT_STORAGE_KEY,
+          result.id,
+        );
 
         setProject(result);
         setProjectStatus("ready");
@@ -1539,12 +1577,17 @@ export default function Home() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
+                  onClick={() => setInviteDialogOpen(true)}
                   disabled={
                     !user ||
                     projectStatus !== "ready" ||
-                    project?.role === "participant"
+                    project?.role !== "owner"
                   }
-                  title="Fitur undangan akan dibuat pada tahap berikutnya"
+                  title={
+                    project?.role === "owner"
+                      ? "Buat tautan undangan editor atau peserta"
+                      : "Hanya pemilik proyek yang dapat mengundang orang"
+                  }
                   className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2.5 text-sm font-bold text-white ring-1 ring-white/10 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Users size={17} />
@@ -2051,6 +2094,13 @@ export default function Home() {
           </aside>
         </div>
       </div>
+
+      <InvitePeopleDialog
+        open={inviteDialogOpen}
+        projectId={project?.id ?? null}
+        projectName={project?.name ?? "Keluarga Ketowan"}
+        onClose={() => setInviteDialogOpen(false)}
+      />
     </main>
   );
 }
